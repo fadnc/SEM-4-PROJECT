@@ -1,0 +1,502 @@
+"""
+Machine Learning Models for ICU Prediction
+Implements LSTM, TCN, and XGBoost models for multi-task prediction
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+from typing import Dict, List, Tuple, Optional
+import xgboost as xgb
+from sklearn.ensemble import GradientBoostingClassifier
+import yaml
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+class LSTMModel(nn.Module):
+    """
+    Bidirectional LSTM for multi-task ICU outcome prediction
+    """
+    
+    def __init__(self, 
+                 input_size: int,
+                 hidden_size: int = 128,
+                 num_layers: int = 2,
+                 num_tasks: int = 6,
+                 dropout: float = 0.3,
+                 bidirectional: bool = True):
+        """
+        Initialize LSTM model
+        
+        Args:
+            input_size: Number of input features
+            hidden_size: Hidden layer size
+            num_layers: Number of LSTM layers
+            num_tasks: Number of prediction tasks
+            dropout: Dropout rate
+            bidirectional: Use bidirectional LSTM
+        """
+        super(LSTMModel, self).__init__()
+        
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.num_tasks = num_tasks
+        self.bidirectional = bidirectional
+        
+        # LSTM layer
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0,
+            bidirectional=bidirectional
+        )
+        
+        # Calculate LSTM output size
+        lstm_output_size = hidden_size * 2 if bidirectional else hidden_size
+        
+        # Dropout layer
+        self.dropout = nn.Dropout(dropout)
+        
+        # Task-specific output heads
+        self.task_heads = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(lstm_output_size, hidden_size // 2),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_size // 2, 1),
+                nn.Sigmoid()
+            )
+            for _ in range(num_tasks)
+        ])
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass
+        
+        Args:
+            x: Input tensor [batch_size, seq_len, input_size]
+            
+        Returns:
+            Output tensor [batch_size, num_tasks]
+        """
+        # LSTM forward pass
+        lstm_out, (hidden, cell) = self.lstm(x)
+        
+        # Use last timestep output
+        if self.bidirectional:
+            # Concatenate forward and backward hidden states
+            last_output = lstm_out[:, -1, :]
+        else:
+            last_output = lstm_out[:, -1, :]
+        
+        # Apply dropout
+        last_output = self.dropout(last_output)
+        
+        # Multi-task outputs
+        outputs = []
+        for head in self.task_heads:
+            task_output = head(last_output)
+            outputs.append(task_output)
+        
+        # Concatenate all task outputs
+        output = torch.cat(outputs, dim=1)  # [batch_size, num_tasks]
+        
+        return output
+
+
+class TCNBlock(nn.Module):
+    """
+    Temporal Convolutional Network block with dilated convolutions
+    """
+    
+    def __init__(self, 
+                 in_channels: int,
+                 out_channels: int,
+                 kernel_size: int,
+                 dilation: int,
+                 dropout: float = 0.3):
+        super(TCNBlock, self).__init__()
+        
+        # Causal padding
+        self.padding = (kernel_size - 1) * dilation
+        
+        # Convolutional layers
+        self.conv1 = nn.Conv1d(
+            in_channels, out_channels, kernel_size,
+            padding=self.padding, dilation=dilation
+        )
+        self.conv2 = nn.Conv1d(
+            out_channels, out_channels, kernel_size,
+            padding=self.padding, dilation=dilation
+        )
+        
+        # Normalization and activation
+        self.norm1 = nn.BatchNorm1d(out_channels)
+        self.norm2 = nn.BatchNorm1d(out_channels)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout)
+        
+        # Residual connection
+        self.downsample = nn.Conv1d(in_channels, out_channels, 1) if in_channels != out_channels else None
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass with residual connection"""
+        residual = x
+        
+        # First conv block
+        out = self.conv1(x)
+        out = out[:, :, :-self.padding]  # Remove future padding (causal)
+        out = self.norm1(out)
+        out = self.relu(out)
+        out = self.dropout(out)
+        
+        # Second conv block
+        out = self.conv2(out)
+        out = out[:, :, :-self.padding]
+        out = self.norm2(out)
+        out = self.relu(out)
+        out = self.dropout(out)
+        
+        # Residual connection
+        if self.downsample is not None:
+            residual = self.downsample(residual)
+        
+        return self.relu(out + residual)
+
+
+class TCNModel(nn.Module):
+    """
+    Temporal Convolutional Network for multi-task ICU prediction
+    """
+    
+    def __init__(self,
+                 input_size: int,
+                 num_channels: List[int] = [64, 128, 256],
+                 kernel_size: int = 3,
+                 num_tasks: int = 6,
+                 dropout: float = 0.3):
+        """
+        Initialize TCN model
+        
+        Args:
+            input_size: Number of input features
+            num_channels: List of channel sizes for each TCN level
+            kernel_size: Convolutional kernel size
+            num_tasks: Number of prediction tasks
+            dropout: Dropout rate
+        """
+        super(TCNModel, self).__init__()
+        
+        self.input_size = input_size
+        self.num_tasks = num_tasks
+        
+        # Input projection
+        self.input_proj = nn.Conv1d(input_size, num_channels[0], 1)
+        
+        # TCN blocks with increasing dilation
+        layers = []
+        for i in range(len(num_channels)):
+            dilation = 2 ** i
+            in_ch = num_channels[i-1] if i > 0 else num_channels[0]
+            out_ch = num_channels[i]
+            
+            layers.append(
+                TCNBlock(in_ch, out_ch, kernel_size, dilation, dropout)
+            )
+        
+        self.tcn = nn.Sequential(*layers)
+        
+        # Global pooling
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        
+        # Task-specific heads
+        self.task_heads = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(num_channels[-1], 128),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(128, 1),
+                nn.Sigmoid()
+            )
+            for _ in range(num_tasks)
+        ])
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass
+        
+        Args:
+            x: Input tensor [batch_size, seq_len, input_size]
+            
+        Returns:
+            Output tensor [batch_size, num_tasks]
+        """
+        # Transpose for Conv1d: [batch, features, time]
+        x = x.transpose(1, 2)
+        
+        # Input projection
+        x = self.input_proj(x)
+        
+        # TCN forward
+        x = self.tcn(x)
+        
+        # Global pooling
+        x = self.pool(x).squeeze(-1)  # [batch, channels]
+        
+        # Multi-task outputs
+        outputs = []
+        for head in self.task_heads:
+            task_output = head(x)
+            outputs.append(task_output)
+        
+        output = torch.cat(outputs, dim=1)  # [batch_size, num_tasks]
+        
+        return output
+
+
+class XGBoostPredictor:
+    """
+    XGBoost baseline for multi-task prediction using flattened features
+    """
+    
+    def __init__(self,
+                 num_tasks: int = 6,
+                 max_depth: int = 6,
+                 learning_rate: float = 0.1,
+                 n_estimators: int = 100,
+                 subsample: float = 0.8):
+        """
+        Initialize XGBoost predictor
+        
+        Args:
+            num_tasks: Number of prediction tasks
+            max_depth: Maximum tree depth
+            learning_rate: Learning rate
+            n_estimators: Number of boosting rounds
+            subsample: Subsample ratio
+        """
+        self.num_tasks = num_tasks
+        self.models = []
+        
+        # Create one model per task
+        for i in range(num_tasks):
+            model = xgb.XGBClassifier(
+                max_depth=max_depth,
+                learning_rate=learning_rate,
+                n_estimators=n_estimators,
+                subsample=subsample,
+                objective='binary:logistic',
+                eval_metric='auc',
+                use_label_encoder=False,
+                random_state=42
+            )
+            self.models.append(model)
+    
+    def flatten_sequences(self, X: np.ndarray) -> np.ndarray:
+        """
+        Flatten temporal sequences to feature vectors
+        
+        Args:
+            X: Input sequences [n_samples, seq_len, n_features]
+            
+        Returns:
+            Flattened features [n_samples, seq_len * n_features]
+        """
+        n_samples, seq_len, n_features = X.shape
+        return X.reshape(n_samples, -1)
+    
+    def fit(self, X: np.ndarray, y: np.ndarray, verbose: bool = False):
+        """
+        Train XGBoost models
+        
+        Args:
+            X: Training sequences [n_samples, seq_len, n_features]
+            y: Labels [n_samples, num_tasks]
+            verbose: Print training progress
+        """
+        # Flatten sequences
+        X_flat = self.flatten_sequences(X)
+        
+        # Train each task model
+        for i, model in enumerate(self.models):
+            if verbose:
+                logger.info(f"Training task {i+1}/{self.num_tasks}...")
+            
+            model.fit(X_flat, y[:, i], verbose=False)
+    
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        """
+        Predict probabilities
+        
+        Args:
+            X: Input sequences [n_samples, seq_len, n_features]
+            
+        Returns:
+            Predictions [n_samples, num_tasks]
+        """
+        X_flat = self.flatten_sequences(X)
+        
+        predictions = []
+        for model in self.models:
+            pred = model.predict_proba(X_flat)[:, 1]  # Get positive class probability
+            predictions.append(pred)
+        
+        return np.column_stack(predictions)
+    
+    def predict(self, X: np.ndarray, threshold: float = 0.5) -> np.ndarray:
+        """
+        Predict binary labels
+        
+        Args:
+            X: Input sequences
+            threshold: Classification threshold
+            
+        Returns:
+            Binary predictions [n_samples, num_tasks]
+        """
+        probas = self.predict_proba(X)
+        return (probas >= threshold).astype(int)
+
+
+class MultiTaskLoss(nn.Module):
+    """
+    Multi-task loss with task weighting
+    """
+    
+    def __init__(self, task_weights: Optional[List[float]] = None):
+        """
+        Initialize multi-task loss
+        
+        Args:
+            task_weights: Optional weights for each task
+        """
+        super(MultiTaskLoss, self).__init__()
+        self.task_weights = task_weights
+        self.bce = nn.BCELoss(reduction='none')
+    
+    def forward(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Compute weighted multi-task loss
+        
+        Args:
+            predictions: Model predictions [batch_size, num_tasks]
+            targets: Ground truth labels [batch_size, num_tasks]
+            
+        Returns:
+            Scalar loss
+        """
+        # Compute BCE for each task
+        task_losses = self.bce(predictions, targets).mean(dim=0)  # [num_tasks]
+        
+        # Apply task weights
+        if self.task_weights is not None:
+            weights = torch.tensor(self.task_weights, device=task_losses.device)
+            weighted_losses = task_losses * weights
+        else:
+            weighted_losses = task_losses
+        
+        # Return mean loss across tasks
+        return weighted_losses.mean()
+
+
+def create_model(model_type: str, config: dict) -> nn.Module:
+    """
+    Factory function to create models
+    
+    Args:
+        model_type: 'lstm', 'tcn', or 'xgboost'
+        config: Configuration dictionary
+        
+    Returns:
+        Model instance
+    """
+    input_size = config.get('input_size', 50)
+    num_tasks = config.get('num_tasks', 6)
+    
+    if model_type.lower() == 'lstm':
+        lstm_config = config.get('LSTM_CONFIG', {})
+        return LSTMModel(
+            input_size=input_size,
+            hidden_size=lstm_config.get('hidden_size', 128),
+            num_layers=lstm_config.get('num_layers', 2),
+            num_tasks=num_tasks,
+            dropout=lstm_config.get('dropout', 0.3),
+            bidirectional=lstm_config.get('bidirectional', True)
+        )
+    
+    elif model_type.lower() == 'tcn':
+        tcn_config = config.get('TCN_CONFIG', {})
+        return TCNModel(
+            input_size=input_size,
+            num_channels=tcn_config.get('num_channels', [64, 128, 256]),
+            kernel_size=tcn_config.get('kernel_size', 3),
+            num_tasks=num_tasks,
+            dropout=tcn_config.get('dropout', 0.3)
+        )
+    
+    elif model_type.lower() == 'xgboost':
+        xgb_config = config.get('XGBOOST_CONFIG', {})
+        return XGBoostPredictor(
+            num_tasks=num_tasks,
+            max_depth=xgb_config.get('max_depth', 6),
+            learning_rate=xgb_config.get('learning_rate', 0.1),
+            n_estimators=xgb_config.get('n_estimators', 100),
+            subsample=xgb_config.get('subsample', 0.8)
+        )
+    
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
+
+
+if __name__ == "__main__":
+    # Test models
+    logger.info("Testing model architectures...")
+    
+    # Test data
+    batch_size = 32
+    seq_len = 24
+    input_size = 50
+    num_tasks = 6
+    
+    X = torch.randn(batch_size, seq_len, input_size)
+    y = torch.randint(0, 2, (batch_size, num_tasks)).float()
+    
+    # Test LSTM
+    logger.info("\n=== Testing LSTM Model ===")
+    lstm = LSTMModel(input_size, hidden_size=128, num_tasks=num_tasks)
+    lstm_out = lstm(X)
+    print(f"LSTM output shape: {lstm_out.shape}")
+    print(f"Sample predictions: {lstm_out[0]}")
+    
+    # Test TCN
+    logger.info("\n=== Testing TCN Model ===")
+    tcn = TCNModel(input_size, num_channels=[64, 128, 256], num_tasks=num_tasks)
+    tcn_out = tcn(X)
+    print(f"TCN output shape: {tcn_out.shape}")
+    print(f"Sample predictions: {tcn_out[0]}")
+    
+    # Test XGBoost
+    logger.info("\n=== Testing XGBoost Model ===")
+    xgb_model = XGBoostPredictor(num_tasks=num_tasks)
+    X_np = X.numpy()
+    y_np = y.numpy()
+    print("Training XGBoost (this may take a moment)...")
+    xgb_model.fit(X_np, y_np, verbose=True)
+    xgb_pred = xgb_model.predict_proba(X_np)
+    print(f"XGBoost predictions shape: {xgb_pred.shape}")
+    print(f"Sample predictions: {xgb_pred[0]}")
+    
+    # Test multi-task loss
+    logger.info("\n=== Testing Multi-Task Loss ===")
+    criterion = MultiTaskLoss(task_weights=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+    loss = criterion(lstm_out, y)
+    print(f"Multi-task loss: {loss.item():.4f}")
+    
+    logger.info("\n✓ All model tests passed!")
