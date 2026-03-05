@@ -417,12 +417,178 @@ class MultiTaskLoss(nn.Module):
         return weighted_losses.mean()
 
 
+# ==================== NEW ARCHITECTURES ====================
+
+
+class PositionalEncoding(nn.Module):
+    """Positional encoding for Transformer model"""
+    
+    def __init__(self, d_model: int, max_len: int = 500, dropout: float = 0.1):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+        
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        if d_model % 2 == 1:
+            pe[:, 1::2] = torch.cos(position * div_term[:-1])
+        else:
+            pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)  # [1, max_len, d_model]
+        self.register_buffer('pe', pe)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x + self.pe[:, :x.size(1), :]
+        return self.dropout(x)
+
+
+class TransformerModel(nn.Module):
+    """
+    Transformer model for ICU prediction (Fadhi Task 1: Sepsis)
+    Multi-head self-attention captures cross-feature interactions
+    """
+    
+    def __init__(self,
+                 input_size: int,
+                 d_model: int = 128,
+                 nhead: int = 8,
+                 num_layers: int = 3,
+                 dim_feedforward: int = 256,
+                 num_tasks: int = 6,
+                 dropout: float = 0.3):
+        super().__init__()
+        
+        self.input_projection = nn.Linear(input_size, d_model)
+        self.pos_encoder = PositionalEncoding(d_model, dropout=dropout)
+        
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True
+        )
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        self.fc = nn.Sequential(
+            nn.Linear(d_model, 64),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(64, num_tasks),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Input tensor [batch_size, seq_len, input_size]
+        Returns:
+            [batch_size, num_tasks]
+        """
+        x = self.input_projection(x)
+        x = self.pos_encoder(x)
+        x = self.transformer_encoder(x)
+        # Use CLS-like aggregation: mean pool across time
+        x = x.mean(dim=1)
+        return self.fc(x)
+
+
+class MultitaskLSTM(nn.Module):
+    """
+    Multitask LSTM with shared encoder + task-specific heads (Fadhi Task 4)
+    Produces individual task predictions AND a composite deterioration score
+    
+    Architecture:
+        Shared BiLSTM encoder → shared representation
+        → Task-specific heads (mortality, sepsis, AKI, hypotension, vasopressor, ventilation)
+        → Composite head (combines shared representation into unified risk score)
+    """
+    
+    def __init__(self,
+                 input_size: int,
+                 hidden_size: int = 128,
+                 num_layers: int = 2,
+                 num_task_groups: int = 6,
+                 tasks_per_group: List[int] = None,
+                 dropout: float = 0.3):
+        super().__init__()
+        
+        self.hidden_size = hidden_size
+        
+        # Shared encoder
+        self.shared_lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0,
+            bidirectional=True
+        )
+        
+        enc_size = hidden_size * 2  # bidirectional
+        
+        # Default tasks_per_group: [3 mortality, 3 sepsis, 6 AKI, 3 hypotension, 2 vasopressor, 3 ventilation]
+        if tasks_per_group is None:
+            tasks_per_group = [3, 3, 6, 3, 2, 3]
+        self.tasks_per_group = tasks_per_group
+        
+        # Task-specific heads
+        self.task_heads = nn.ModuleList()
+        for n_tasks in tasks_per_group:
+            head = nn.Sequential(
+                nn.Linear(enc_size, 64),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(64, n_tasks),
+                nn.Sigmoid()
+            )
+            self.task_heads.append(head)
+        
+        # Composite deterioration score head
+        total_tasks = sum(tasks_per_group)
+        self.composite_head = nn.Sequential(
+            nn.Linear(enc_size + total_tasks, 32),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(32, 1),
+            nn.Sigmoid()
+        )
+        
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: [batch_size, seq_len, input_size]
+        Returns:
+            [batch_size, total_tasks + 1]  (last column = composite score)
+        """
+        # Shared encoding
+        lstm_out, _ = self.shared_lstm(x)
+        shared_repr = self.dropout(lstm_out[:, -1, :])
+        
+        # Task-specific predictions
+        task_outputs = []
+        for head in self.task_heads:
+            task_outputs.append(head(shared_repr))
+        
+        all_tasks = torch.cat(task_outputs, dim=1)
+        
+        # Composite deterioration score
+        composite_input = torch.cat([shared_repr, all_tasks], dim=1)
+        composite_score = self.composite_head(composite_input)
+        
+        # Return all tasks + composite as last column
+        return torch.cat([all_tasks, composite_score], dim=1)
+
+
 def create_model(model_type: str, config: dict) -> nn.Module:
     """
     Factory function to create models
     
     Args:
-        model_type: 'lstm', 'tcn', or 'xgboost'
+        model_type: 'lstm', 'tcn', 'transformer', 'multitask_lstm', or 'xgboost'
         config: Configuration dictionary
         
     Returns:
@@ -452,6 +618,29 @@ def create_model(model_type: str, config: dict) -> nn.Module:
             dropout=tcn_config.get('dropout', 0.3)
         )
     
+    elif model_type.lower() == 'transformer':
+        tf_config = config.get('TRANSFORMER_CONFIG', {})
+        return TransformerModel(
+            input_size=input_size,
+            d_model=tf_config.get('d_model', 128),
+            nhead=tf_config.get('nhead', 8),
+            num_layers=tf_config.get('num_layers', 3),
+            dim_feedforward=tf_config.get('dim_feedforward', 256),
+            num_tasks=num_tasks,
+            dropout=tf_config.get('dropout', 0.3)
+        )
+    
+    elif model_type.lower() == 'multitask_lstm':
+        lstm_config = config.get('LSTM_CONFIG', {})
+        return MultitaskLSTM(
+            input_size=input_size,
+            hidden_size=lstm_config.get('hidden_size', 128),
+            num_layers=lstm_config.get('num_layers', 2),
+            num_task_groups=6,
+            tasks_per_group=config.get('tasks_per_group', [3, 3, 6, 3, 2, 3]),
+            dropout=lstm_config.get('dropout', 0.3)
+        )
+    
     elif model_type.lower() == 'xgboost':
         xgb_config = config.get('XGBOOST_CONFIG', {})
         return XGBoostPredictor(
@@ -463,7 +652,7 @@ def create_model(model_type: str, config: dict) -> nn.Module:
         )
     
     else:
-        raise ValueError(f"Unknown model type: {model_type}")
+        raise ValueError(f"Unknown model type: {model_type}. Choose from: lstm, tcn, transformer, multitask_lstm, xgboost")
 
 
 if __name__ == "__main__":
@@ -484,30 +673,40 @@ if __name__ == "__main__":
     lstm = LSTMModel(input_size, hidden_size=128, num_tasks=num_tasks)
     lstm_out = lstm(X)
     print(f"LSTM output shape: {lstm_out.shape}")
-    print(f"Sample predictions: {lstm_out[0]}")
     
     # Test TCN
     logger.info("\n=== Testing TCN Model ===")
     tcn = TCNModel(input_size, num_channels=[64, 128, 256], num_tasks=num_tasks)
     tcn_out = tcn(X)
     print(f"TCN output shape: {tcn_out.shape}")
-    print(f"Sample predictions: {tcn_out[0]}")
+    
+    # Test Transformer
+    logger.info("\n=== Testing Transformer Model ===")
+    transformer = TransformerModel(input_size, num_tasks=num_tasks)
+    tf_out = transformer(X)
+    print(f"Transformer output shape: {tf_out.shape}")
+    
+    # Test MultitaskLSTM
+    logger.info("\n=== Testing MultitaskLSTM ===")
+    mt_lstm = MultitaskLSTM(input_size, tasks_per_group=[3, 3, 6, 3, 2, 3])
+    mt_out = mt_lstm(X)
+    print(f"MultitaskLSTM output shape: {mt_out.shape}")
+    print(f"  (20 task predictions + 1 composite deterioration score = 21)")
     
     # Test XGBoost
     logger.info("\n=== Testing XGBoost Model ===")
     xgb_model = XGBoostPredictor(num_tasks=num_tasks)
     X_np = X.numpy()
     y_np = y.numpy()
-    print("Training XGBoost (this may take a moment)...")
     xgb_model.fit(X_np, y_np, verbose=True)
     xgb_pred = xgb_model.predict_proba(X_np)
     print(f"XGBoost predictions shape: {xgb_pred.shape}")
-    print(f"Sample predictions: {xgb_pred[0]}")
     
     # Test multi-task loss
     logger.info("\n=== Testing Multi-Task Loss ===")
-    criterion = MultiTaskLoss(task_weights=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+    criterion = MultiTaskLoss(task_weights=[1.0] * num_tasks)
     loss = criterion(lstm_out, y)
     print(f"Multi-task loss: {loss.item():.4f}")
     
     logger.info("\n✓ All model tests passed!")
+

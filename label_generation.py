@@ -29,6 +29,9 @@ class LabelGenerator:
         self.sepsis_criteria = self.config.get('SEPSIS_CRITERIA', {})
         self.aki_criteria = self.config.get('AKI_KDIGO_STAGES', {})
         self.hypotension_threshold = self.config.get('HYPOTENSION_THRESHOLD', 65)
+        self.ventilation_itemids = self.config.get('VENTILATION_ITEMIDS', [225792, 225794, 226260])
+        self.ventilation_icd_codes = self.config.get('VENTILATION_ICD_CODES', ['9670', '9671', '9672', '9604', '9390'])
+        self.vasopressor_itemids = self.config.get('VASOPRESSOR_ITEMIDS', [221906, 221289, 222315, 221749, 221662])
         
     def _load_config(self, config_path: str) -> dict:
         """Load configuration file"""
@@ -309,7 +312,8 @@ class LabelGenerator:
     
     def generate_ventilation_labels(self,
                                    chartevents: pd.DataFrame,
-                                   procedures: pd.DataFrame,
+                                   procedureevents: pd.DataFrame,
+                                   procedures_icd: pd.DataFrame,
                                    current_time: pd.Timestamp,
                                    window_hours: int = 12) -> int:
         """
@@ -317,20 +321,44 @@ class LabelGenerator:
         
         Args:
             chartevents: Chart events (contains ventilation settings)
-            procedures: Procedures (contains intubation codes)
+            procedureevents: MetaVision procedure events
+            procedures_icd: ICD-9 procedure codes
             current_time: Current prediction time
             window_hours: Prediction window
             
         Returns:
             1 if mechanical ventilation within window, 0 otherwise
         """
-        # This is a simplified version - in real implementation would check:
-        # - Ventilator settings in chartevents
-        # - Intubation procedure codes
-        # - Ventilation mode changes
+        window_end = current_time + pd.Timedelta(hours=window_hours)
         
-        # For now, return 0 as placeholder
-        # Would need specific itemids for ventilation from D_ITEMS
+        # Check 1: CHARTEVENTS for ventilation itemids
+        if len(chartevents) > 0 and 'itemid' in chartevents.columns:
+            vent_chart = chartevents[
+                (chartevents['itemid'].isin(self.ventilation_itemids)) &
+                (chartevents['charttime'] >= current_time) &
+                (chartevents['charttime'] <= window_end)
+            ]
+            if len(vent_chart) > 0:
+                return 1
+        
+        # Check 2: PROCEDUREEVENTS_MV for ventilation procedures
+        if len(procedureevents) > 0 and 'itemid' in procedureevents.columns:
+            vent_proc = procedureevents[
+                (procedureevents['itemid'].isin(self.ventilation_itemids)) &
+                (procedureevents['starttime'] >= current_time) &
+                (procedureevents['starttime'] <= window_end)
+            ]
+            if len(vent_proc) > 0:
+                return 1
+        
+        # Check 3: PROCEDURES_ICD for ventilation ICD codes
+        if len(procedures_icd) > 0 and 'icd9_code' in procedures_icd.columns:
+            vent_icd = procedures_icd[
+                procedures_icd['icd9_code'].astype(str).isin(self.ventilation_icd_codes)
+            ]
+            if len(vent_icd) > 0:
+                return 1
+        
         return 0
     
     def generate_all_labels(self,
@@ -339,7 +367,11 @@ class LabelGenerator:
                            labs: pd.DataFrame,
                            prescriptions: pd.DataFrame,
                            diagnoses: pd.DataFrame,
-                           current_time: pd.Timestamp) -> Dict[str, int]:
+                           current_time: pd.Timestamp,
+                           chartevents: pd.DataFrame = None,
+                           procedureevents: pd.DataFrame = None,
+                           procedures_icd: pd.DataFrame = None,
+                           inputevents: pd.DataFrame = None) -> Dict[str, int]:
         """
         Generate all prediction labels for a single timepoint
         
@@ -350,11 +382,24 @@ class LabelGenerator:
             prescriptions: Prescriptions data
             diagnoses: Diagnosis codes
             current_time: Current prediction time
+            chartevents: Chart events (for ventilation detection)
+            procedureevents: Procedure events (for ventilation detection)
+            procedures_icd: ICD procedure codes (for ventilation detection)
+            inputevents: Input events (for vasopressor detection from IV data)
             
         Returns:
             Dictionary with all binary labels
         """
         labels = {}
+        
+        if chartevents is None:
+            chartevents = pd.DataFrame()
+        if procedureevents is None:
+            procedureevents = pd.DataFrame()
+        if procedures_icd is None:
+            procedures_icd = pd.DataFrame()
+        if inputevents is None:
+            inputevents = pd.DataFrame()
         
         # Mortality labels (multiple windows)
         for window in self.time_windows.get('mortality', [6, 12, 24]):
@@ -390,10 +435,13 @@ class LabelGenerator:
                 prescriptions, current_time, window
             )
         
-        # Ventilation labels
+        # Ventilation labels (real detection from chartevents + procedures)
         for window in self.time_windows.get('ventilation', [6, 12, 24]):
             label_name = f'ventilation_{window}h'
-            labels[label_name] = 0  # Placeholder
+            labels[label_name] = self.generate_ventilation_labels(
+                chartevents, procedureevents, procedures_icd,
+                current_time, window
+            )
         
         return labels
 

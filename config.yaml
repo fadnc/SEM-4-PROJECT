@@ -76,3 +76,44 @@ AKI_KDIGO_STAGES:
   stage1_cr_ratio: 1.5
   stage2_cr_ratio: 2.0
   stage3_cr_ratio: 3.0
+
+# Transformer model config (for sepsis prediction)
+TRANSFORMER_CONFIG:
+  d_model: 128
+  nhead: 8
+  num_layers: 3
+  dim_feedforward: 256
+  dropout: 0.3
+
+# Ventilation detection itemids (from D_ITEMS)
+VENTILATION_ITEMIDS:
+  - 225792  # Invasive Ventilation
+  - 225794  # Non-invasive Ventilation
+  - 226260  # Mechanically Ventilated
+
+# Ventilation ICD-9 procedure codes
+VENTILATION_ICD_CODES:
+  - "9670"  # Continuous invasive mechanical ventilation, unspecified duration
+  - "9671"  # Continuous invasive mech vent < 96 hours
+  - "9672"  # Continuous invasive mech vent >= 96 hours
+  - "9604"  # Insertion of endotracheal tube
+  - "9390"  # Non-invasive mechanical ventilation
+
+# Vasopressor itemids for INPUTEVENTS_MV
+VASOPRESSOR_ITEMIDS:
+  - 221906  # Norepinephrine
+  - 221289  # Epinephrine
+  - 222315  # Vasopressin
+  - 221749  # Phenylephrine
+  - 221662  # Dopamine
+
+# Urine output itemids for AKI (from OUTPUTEVENTS)
+URINE_OUTPUT_ITEMIDS:
+  - 40055   # Urine Out Foley
+  - 43175   # Urine
+  - 40069   # Urine Out Void
+  - 40094   # Urine Out Condom Cath
+  - 226559  # Foley
+  - 226560  # Void
+  - 226561  # Condom Cath
+  - 227489  # GU Irrigant/Round

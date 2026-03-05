@@ -1,65 +1,120 @@
 """
-Show all 20 prediction tasks and their performance metrics
+Show Predictions — Display results from all Smart ICU predictors.
+Reads per-task reports and displays best model per task + full comparison.
 """
-import json, os
 
-# Load latest metrics report
-reports = sorted([f for f in os.listdir('output') if f.startswith('metrics_report')])
-with open(f'output/{reports[-1]}') as f:
-    content = f.read().replace('NaN', 'null')
-    metrics = json.loads(content)
+import os
+import json
+import glob
+import sys
 
-# The 20 prediction labels in order
-labels = [
-    'mortality_6h',   'mortality_12h',  'mortality_24h',
-    'sepsis_6h',      'sepsis_12h',     'sepsis_24h',
-    'aki_stage1_24h', 'aki_stage2_24h', 'aki_stage3_24h',
-    'aki_stage1_48h', 'aki_stage2_48h', 'aki_stage3_48h',
-    'hypotension_1h', 'hypotension_3h', 'hypotension_6h',
-    'vasopressor_6h', 'vasopressor_12h',
-    'ventilation_6h', 'ventilation_12h','ventilation_24h'
-]
 
-print('=' * 90)
-print('SMART ICU ASSISTANT — ALL 20 PREDICTION TASKS')
-print('=' * 90)
-print(f'{"#":>3} | {"Prediction Task":<22} | {"LSTM AUROC":>12} | {"TCN AUROC":>12} | {"XGB AUROC":>12} | Status')
-print('-' * 90)
+def load_latest_report():
+    """Load the most recent metrics report."""
+    reports = sorted(glob.glob('output/metrics_report_*.json'))
+    if not reports:
+        return None
+    with open(reports[-1], 'r') as f:
+        return json.load(f)
 
-for i, label in enumerate(labels):
-    lstm_val = metrics['models']['lstm']['test_auroc'][i]
-    tcn_val  = metrics['models']['tcn']['test_auroc'][i]
-    xgb_val  = metrics['models']['xgboost']['test_auroc'][i]
 
-    lstm_s = f'{lstm_val:.3f}' if lstm_val else '  NaN'
-    tcn_s  = f'{tcn_val:.3f}' if tcn_val else '  NaN'
-    xgb_s  = f'{xgb_val:.3f}' if xgb_val else '  NaN'
-    status = 'OK' if lstm_val else 'No +ve labels'
+def load_task_reports():
+    """Load individual per-task reports."""
+    tasks = {}
+    for path in glob.glob('output/*_report.json'):
+        name = os.path.basename(path).replace('_report.json', '')
+        with open(path, 'r') as f:
+            tasks[name] = json.load(f)
+    return tasks
 
-    print(f'{i+1:>3} | {label:<22} | {lstm_s:>12} | {tcn_s:>12} | {xgb_s:>12} | {status}')
 
-print('=' * 90)
-print()
-print('PREDICTION CATEGORIES:')
-print()
-print('  [1-3]   MORTALITY    — Will the patient die within the next 6/12/24 hours?')
-print('                         Uses: date of death vs current prediction time')
-print()
-print('  [4-6]   SEPSIS       — Will the patient develop sepsis within 6/12/24 hours?')
-print('                         Uses: SIRS criteria (temp, HR, RR, WBC) + antibiotic/ICD codes')
-print()
-print('  [7-12]  AKI          — Will the patient develop Acute Kidney Injury (stages 1-3)?')
-print('                         Uses: KDIGO criteria (creatinine increase vs baseline)')
-print()
-print('  [13-15] HYPOTENSION  — Will blood pressure drop critically in 1/3/6 hours?')
-print('                         Uses: Mean Arterial Pressure < 65 mmHg')
-print()
-print('  [16-17] VASOPRESSOR  — Will the patient need vasopressor drugs in 6/12 hours?')
-print('                         Uses: norepinephrine, epinephrine, vasopressin prescriptions')
-print()
-print('  [18-20] VENTILATION  — Will the patient need mechanical ventilation in 6/12/24 hours?')
-print('                         Uses: placeholder (returns 0) — needs ventilator itemids')
-print()
-print('NOTE: "No +ve labels" means all test-set patients had label=0 for that task.')
-print('      AUROC requires both positive and negative examples. This is expected on')
-print('      the small demo dataset (100 patients). Full MIMIC-III will fix this.')
+def main():
+    print("=" * 90)
+    print("SMART ICU ASSISTANT — PREDICTION RESULTS")
+    print("=" * 90)
+
+    task_reports = load_task_reports()
+    main_report = load_latest_report()
+
+    if not task_reports and not main_report:
+        print("\n  No results found. Run the pipeline first:")
+        print("    python main_pipeline.py --data_dir data/")
+        return
+
+    # Display each task
+    task_order = [
+        'mortality', 'sepsis', 'aki', 'hypotension',
+        'vasopressor', 'ventilation', 'readmission', 'composite',
+    ]
+
+    print(f"\n{'#':>3} | {'Task':<25} | {'Best Model':<18} | {'Best AUROC':>10} | Models Tried")
+    print("-" * 90)
+
+    task_num = 1
+    for task_name in task_order:
+        report = task_reports.get(task_name, {})
+        if not report:
+            # Try main report
+            if main_report and 'predictor_results' in main_report:
+                report = main_report['predictor_results'].get(task_name, {})
+
+        if not report:
+            print(f"{task_num:>3} | {task_name:<25} | {'—':<18} | {'—':>10} | Not trained")
+            task_num += 1
+            continue
+
+        best_model = report.get('best_model', 'N/A')
+        best_auroc = report.get('best_auroc', report.get('auroc', 0))
+        comparison = report.get('comparison', {})
+
+        # Format AUROC
+        if isinstance(best_auroc, (int, float)) and best_auroc > 0 and best_auroc is not None:
+            auroc_str = f"{best_auroc:.4f}"
+        else:
+            auroc_str = "N/A"
+
+        # List tried models
+        tried = []
+        for m, v in comparison.items():
+            if isinstance(v, dict):
+                m_auroc = v.get('mean_test_auroc', 0)
+                if isinstance(m_auroc, (int, float)) and m_auroc > 0:
+                    marker = "★" if m == best_model else " "
+                    tried.append(f"{marker}{m}({m_auroc:.3f})")
+        tried_str = ", ".join(tried) if tried else best_model or "—"
+
+        # Description
+        desc = report.get('description', task_name)
+
+        print(f"{task_num:>3} | {task_name:<25} | {str(best_model):<18} | {auroc_str:>10} | {tried_str}")
+        task_num += 1
+
+    # Summary
+    print("=" * 90)
+
+    print(f"\nPREDICTION CATEGORIES:")
+    categories = [
+        ("[1]   MORTALITY",    "LSTM primary — 6/12/24h death prediction"),
+        ("[2]   SEPSIS",       "Transformer primary — SIRS + infection at 6/12/24h"),
+        ("[3]   AKI",          "LSTM/XGBoost — KDIGO stages 1-3 at 24/48h"),
+        ("[4]   HYPOTENSION",  "TCN primary — MAP < 65 mmHg at 1/3/6h"),
+        ("[5]   VASOPRESSOR",  "XGBoost primary — drug requirement at 6/12h"),
+        ("[6]   VENTILATION",  "LSTM primary — mechanical vent at 6/12/24h"),
+        ("[7]   READMISSION",  "XGBoost + SHAP — 30-day ICU readmission"),
+        ("[8]   COMPOSITE",    "MultitaskLSTM — unified deterioration score"),
+    ]
+    for cat, desc in categories:
+        print(f"  {cat:<20s} — {desc}")
+
+    # Latest report info
+    latest = sorted(glob.glob('output/metrics_report_*.json'))
+    if latest:
+        print(f"\nLatest report: {latest[-1]}")
+
+    task_report_files = sorted(glob.glob('output/*_report.json'))
+    if task_report_files:
+        print(f"Task reports:  {len(task_report_files)} files in output/")
+
+
+if __name__ == "__main__":
+    main()
