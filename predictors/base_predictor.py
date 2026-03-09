@@ -140,6 +140,7 @@ class BasePredictor(ABC):
             'task': self.TASK_NAME,
             'description': self.TASK_DESCRIPTION,
             'labels': self.get_label_names(),
+            'input_size': X.shape[2],
             'best_model': self.best_model_name,
             'best_auroc': self.best_auroc,
             'comparison': comparison,
