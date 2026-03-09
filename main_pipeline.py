@@ -115,7 +115,6 @@ class SmartICUPipeline:
         labs_grouped = dict(tuple(
             self.data_loader.labevents.groupby('icustay_id')
         )) if self.data_loader.labevents is not None else {}
-
         logger.info("Pre-indexing complete.")
 
         for idx, stay in stays.iterrows():
@@ -160,7 +159,7 @@ class SmartICUPipeline:
                 )
 
                 # Prepare extra data for label generation
-                extra_data = self._prepare_extra_data(stay, icustay_id)
+                extra_data = self._prepare_extra_data(stay, icustay_id, stay_charts=stay_charts)
 
                 # Generate labels for each sequence
                 for seq_idx, timestamp in enumerate(timestamps):
@@ -202,7 +201,7 @@ class SmartICUPipeline:
 
         return X, y, all_timestamps, all_label_names
 
-    def _prepare_extra_data(self, stay, icustay_id) -> Dict:
+    def _prepare_extra_data(self, stay, icustay_id, stay_charts=None) -> Dict:
         """Prepare extra data tables for label generation."""
         extra = {}
 
@@ -232,9 +231,7 @@ class SmartICUPipeline:
                     self.data_loader.chartevents['icustay_id'] == icustay_id
                 ]
             else:
-                extra['chartevents'] = pd.DataFrame()
-        else:
-            extra['chartevents'] = pd.DataFrame()
+                extra['chartevents'] = stay_charts if stay_charts is not None else pd.DataFrame()
 
         # Procedureevents
         if hasattr(self.data_loader, 'procedureevents') and self.data_loader.procedureevents is not None:
