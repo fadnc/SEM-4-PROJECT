@@ -141,9 +141,21 @@ class MIMICDataLoader:
             
             chunks = []
             total_read = 0
-            chunk_size = 500_000
-            
-            for chunk in pd.read_csv(filepath, chunksize=chunk_size, low_memory=False):
+            chunk_size = 2_000_000
+
+            CHARTEVENTS_DTYPES = {
+                    'ROW_ID': 'int32',
+                    'SUBJECT_ID': 'int32',
+                    'HADM_ID': 'float32',
+                    'ICUSTAY_ID': 'float32',
+                    'ITEMID': 'int32',
+                    'VALUENUM': 'float32',
+                    'VALUEUOM': 'str',
+                    'ERROR': 'float32',
+                }
+            for chunk in pd.read_csv(filepath, chunksize=chunk_size, dtype=CHARTEVENTS_DTYPES, 
+                    usecols= ['SUBJECT_ID', 'HADM_ID', 'ICUSTAY_ID', 
+                    'ITEMID', 'CHARTTIME', 'VALUENUM'],low_memory=False):
                 chunk = self._normalize_columns(chunk)
                 if 'itemid' in chunk.columns:
                     filtered = chunk[chunk['itemid'].isin(relevant_ids)]
