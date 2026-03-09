@@ -231,7 +231,18 @@ class MIMICDataLoader:
         """Load laboratory test results and assign icustay_id via time-based join"""
         logger.info("Loading LABEVENTS...")
         filepath = os.path.join(self.data_dir, 'LABEVENTS.csv')
-        self.labevents = self._normalize_columns(pd.read_csv(filepath))
+        relevant_subjects = set(self.icu_stays['subject_id'].unique())
+        chunks = []
+        new_path = pd.read_csv(filepath, chunksize=1_000_000,
+            dtype={'SUBJECT_ID': 'int32', 'ITEMID': 'int32', 'VALUENUM': 'float32'},
+            usecols=['SUBJECT_ID', 'HADM_ID', 'ITEMID', 'CHARTTIME', 'VALUENUM'])
+        for chunk in new_path:
+            chunk = self._normalize_columns(chunk)
+            #filter to relevant patients before expensice join
+            chunk = chunk[chunk['subject_id'].isin(relevant_subjects)]
+            if len(chunk) > 0:
+                chunks.append(chunk)
+        self.labevents = pd.concat(chunks, ignore_index=True)
         
         # Convert timestamps
         self.labevents['charttime'] = pd.to_datetime(self.labevents['charttime'])
