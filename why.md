@@ -54,3 +54,8 @@ Auto-falls back to CPU if no CUDA
 base_predictor.py — VRAM cleanup:
 
 Calls clear_gpu_memory() before each model training to prevent OOM
+
+The pipeline processed all 61K stays successfully but crashed creating the final numpy array — 14.2 GB needed, only ~1.4 GB RAM free. Two quick fixes will solve this:
+
+float64 → float32: Halves memory from 14.2 GB → 7.1 GB (sufficient for ML, no precision loss)
+Pre-allocate instead of list→array: Avoids the 2× memory spike during conversion
