@@ -174,12 +174,13 @@ class SmartICUPipeline:
                         # Convert to ordered array
                         label_array = [labels.get(name, 0) for name in all_label_names]
                         all_labels.append(label_array)
-                        all_sequences.append(sequences[seq_idx])
+                        # Cast to float32 immediately (saves 50% memory: 14GB → 7GB)
+                        all_sequences.append(sequences[seq_idx].astype(np.float32))
                         all_timestamps.append(timestamp)
                     except Exception as e:
                         logger.debug(f"Label error stay {icustay_id}: {e}")
                         all_labels.append([0] * len(all_label_names))
-                        all_sequences.append(sequences[seq_idx])
+                        all_sequences.append(sequences[seq_idx].astype(np.float32))
                         all_timestamps.append(timestamp)
 
             except Exception as e:
@@ -190,21 +191,34 @@ class SmartICUPipeline:
                 logger.info(f"  Processed {idx+1}/{len(stays)} stays, "
                            f"{len(all_sequences)} sequences collected")
 
+        # Free grouped data before building arrays (reclaim ~4-8 GB)
+        del charts_grouped, labs_grouped
+        import gc; gc.collect()
+        logger.info(f"  Building arrays from {len(all_sequences)} sequences...")
+
         if all_sequences:
             feature_sizes = [seq.shape[1] for seq in all_sequences]
             target_features = max(feature_sizes)
-            padded_sequences = []
-            for seq in all_sequences:
-                if seq.shape[1] < target_features:
-                    pad = np.zeros((seq.shape[0], target_features - seq.shape[1]), dtype=seq.dtype)
-                    seq = np.concatenate([seq, pad], axis=1)
-                padded_sequences.append(seq)
-            X = np.array(padded_sequences)
+            n_seqs = len(all_sequences)
+            seq_len = all_sequences[0].shape[0]
+
+            # Pre-allocate final array directly (avoids 2× peak memory)
+            X = np.zeros((n_seqs, seq_len, target_features), dtype=np.float32)
+            for i, seq in enumerate(all_sequences):
+                X[i, :, :seq.shape[1]] = seq
+            del all_sequences  # Free the list immediately
+            gc.collect()
         else:
-            X = np.array([])
-        y = np.array(all_labels)
+            X = np.array([], dtype=np.float32)
+
+        y = np.array(all_labels, dtype=np.float32)
+        del all_labels
+        gc.collect()
+
         input_size = X.shape[2] if len(X) > 0 else 0
+        mem_gb = X.nbytes / (1024**3)
         logger.info(f"  Padded all sequences to feature size: {input_size}")
+        logger.info(f"  Array memory: {mem_gb:.1f} GB (float32)")
         logger.info(f"✓ Feature extraction complete")
         logger.info(f"  Sequences: {X.shape}, Labels: {y.shape}")
 
