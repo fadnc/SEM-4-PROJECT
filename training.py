@@ -121,7 +121,7 @@ class ModelTrainer:
         
         # Initialize optimizer and loss
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
-        self.criterion = nn.BCELoss()
+        self.criterion = nn.BCEWithLogitsLoss()  # combines Sigmoid+BCE — AMP safe
         
         # Mixed-precision scaler
         self.scaler = GradScaler('cuda') if self.use_amp else None
@@ -258,7 +258,7 @@ class ModelTrainer:
                     loss = self.criterion(predictions, labels)
                 
                 total_loss += loss.item()
-                all_predictions.append(predictions.float().cpu().numpy())
+                all_predictions.append(torch.sigmoid(predictions).float().cpu().numpy())
                 all_labels.append(labels.cpu().numpy())
         
         avg_loss = total_loss / len(val_loader)
@@ -354,7 +354,9 @@ class ModelTrainer:
         val_dataset = ICUDataset(val_X, val_y)
         
         pin = (self.device.type == 'cuda')  # Faster CPU→GPU transfers
-        num_workers = 2 if pin else 0
+        # Windows can't share memory handles with num_workers>0 on large datasets
+        import sys
+        num_workers = 0 if sys.platform == 'win32' else (2 if pin else 0)
         
         train_loader = DataLoader(
             train_dataset, batch_size=self.batch_size, shuffle=True,
@@ -431,7 +433,7 @@ class ModelTrainer:
                         pred = self.model(sequences)
                 else:
                     pred = self.model(sequences)
-                predictions.append(pred.float().cpu().numpy())
+                predictions.append(torch.sigmoid(pred).float().cpu().numpy())
         
         return np.vstack(predictions)
     
