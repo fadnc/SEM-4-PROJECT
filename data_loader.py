@@ -87,7 +87,9 @@ class MIMICDataLoader:
         time_cols = ['admittime', 'dischtime', 'deathtime', 'edregtime', 'edouttime']
         for col in time_cols:
             if col in self.admissions.columns:
-                self.admissions[col] = pd.to_datetime(self.admissions[col])
+                self.admissions[col] = pd.to_datetime(
+                    self.admissions[col], format='%Y-%m-%d %H:%M:%S', errors='coerce'
+                )
         
         logger.info(f"Loaded {len(self.admissions)} admissions")
         return self.admissions
@@ -290,7 +292,7 @@ class MIMICDataLoader:
         """Load medication prescriptions"""
         logger.info("Loading PRESCRIPTIONS...")
         filepath = os.path.join(self.data_dir, 'PRESCRIPTIONS.csv')
-        self.prescriptions = self._normalize_columns(pd.read_csv(filepath))
+        self.prescriptions = self._normalize_columns(pd.read_csv(filepath, low_memory=False))
         
         # Convert timestamps
         time_cols = ['startdate', 'enddate']
@@ -399,7 +401,9 @@ class MIMICDataLoader:
         self.callout = self._normalize_columns(pd.read_csv(filepath))
         for col in ['createtime', 'updatetime', 'acknowledgetime', 'outcometime']:
             if col in self.callout.columns:
-                self.callout[col] = pd.to_datetime(self.callout[col], errors='coerce')
+                self.callout[col] = pd.to_datetime(
+                    self.callout[col], format='%Y-%m-%d %H:%M:%S', errors='coerce'
+                )
         logger.info(f"Loaded {len(self.callout)} callout records")
         return self.callout
     
@@ -536,7 +540,11 @@ class MIMICDataLoader:
             how='left'
         )
         
-        # Calculate age at ICU admission (handle overflow for invalid dates)
+        # Calculate age at ICU admission
+        # NOTE: MIMIC-III dates are shifted to 2100-2200 for de-identification,
+        # but the shift is consistent per patient, so (intime - dob) gives correct age.
+        # EXCEPTION: patients >89 years old have DOB shifted ~300 years before admission
+        # (extra de-identification), producing ages of 300+. We clamp these to 91.4.
         try:
             merged['age'] = (merged['intime'] - merged['dob']).dt.total_seconds() / (365.25 * 24 * 3600)
         except OverflowError:
@@ -547,7 +555,19 @@ class MIMICDataLoader:
                 except:
                     return np.nan
             merged['age'] = merged.apply(safe_age_calc, axis=1)
-        
+
+        # Clamp unrealistic ages (>89 de-identification artifact → set to 91.4)
+        n_elderly = (merged['age'] > 89).sum()
+        if n_elderly > 0:
+            merged.loc[merged['age'] > 89, 'age'] = 91.4
+            logger.info(f"  - Clamped {n_elderly} patients with age >89 (MIMIC-III de-identification)")
+
+        # Also clamp negative ages (rare data artifacts)
+        n_negative = (merged['age'] < 0).sum()
+        if n_negative > 0:
+            merged.loc[merged['age'] < 0, 'age'] = np.nan
+            logger.info(f"  - Set {n_negative} negative ages to NaN (data artifact)")
+
         # Calculate time to death (if applicable)
         try:
             merged['hours_to_death'] = (merged['dod'] - merged['intime']).dt.total_seconds() / 3600
