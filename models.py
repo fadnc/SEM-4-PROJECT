@@ -70,8 +70,7 @@ class LSTMModel(nn.Module):
                 nn.Linear(lstm_output_size, hidden_size // 2),
                 nn.ReLU(),
                 nn.Dropout(dropout),
-                nn.Linear(hidden_size // 2, 1),
-                nn.Sigmoid()
+                nn.Linear(hidden_size // 2, 1)
             )
             for _ in range(num_tasks)
         ])
@@ -222,8 +221,7 @@ class TCNModel(nn.Module):
                 nn.Linear(num_channels[-1], 128),
                 nn.ReLU(),
                 nn.Dropout(dropout),
-                nn.Linear(128, 1),
-                nn.Sigmoid()
+                nn.Linear(128, 1)
             )
             for _ in range(num_tasks)
         ])
@@ -489,8 +487,7 @@ class TransformerModel(nn.Module):
             nn.Linear(d_model, 64),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(64, num_tasks),
-            nn.Sigmoid()
+            nn.Linear(64, num_tasks)
         )
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -554,8 +551,7 @@ class MultitaskLSTM(nn.Module):
                 nn.Linear(enc_size, 64),
                 nn.ReLU(),
                 nn.Dropout(dropout),
-                nn.Linear(64, n_tasks),
-                nn.Sigmoid()
+                nn.Linear(64, n_tasks)
             )
             self.task_heads.append(head)
         
@@ -565,8 +561,7 @@ class MultitaskLSTM(nn.Module):
             nn.Linear(enc_size + total_tasks, 32),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(32, 1),
-            nn.Sigmoid()
+            nn.Linear(32, 1)
         )
         
         self.dropout = nn.Dropout(dropout)
