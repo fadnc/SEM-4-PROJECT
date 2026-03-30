@@ -75,8 +75,8 @@ class ICUDataset(Dataset):
             sequences: Feature sequences [n_samples, seq_len, n_features]
             labels: Multi-task labels [n_samples, num_tasks]
         """
-        self.sequences = torch.FloatTensor(sequences)
-        self.labels = torch.FloatTensor(labels)
+        self.sequences = torch.nan_to_num(torch.FloatTensor(sequences), nan=0.0, posinf=0.0, neginf=0.0)
+        self.labels = torch.nan_to_num(torch.FloatTensor(labels), nan=0.0, posinf=0.0, neginf=0.0)
     
     def __len__(self) -> int:
         return len(self.sequences)
