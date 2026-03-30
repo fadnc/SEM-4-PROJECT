@@ -217,6 +217,19 @@ class SmartICUPipeline:
         gc.collect()
 
         input_size = X.shape[2] if len(X) > 0 else 0
+        # Clean NaN/inf values (from missing vitals/labs)
+        nan_count = np.isnan(X).sum()
+        inf_count = np.isinf(X).sum()
+        if nan_count > 0 or inf_count > 0:
+            logger.info(f"  Cleaning {nan_count:,} NaN and {inf_count:,} inf values → 0")
+            np.nan_to_num(X, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Also clean labels
+        nan_labels = np.isnan(y).sum()
+        if nan_labels > 0:
+            logger.info(f"  Cleaning {nan_labels:,} NaN labels → 0")
+            np.nan_to_num(y, copy=False, nan=0.0)
+
         mem_gb = X.nbytes / (1024**3)
         logger.info(f"  Padded all sequences to feature size: {input_size}")
         logger.info(f"  Array memory: {mem_gb:.1f} GB (float32)")
@@ -410,6 +423,12 @@ class SmartICUPipeline:
         y = np.load(y_path)
         with open(meta_path, 'rb') as f:
             meta = pickle.load(f)
+        # Clean NaN/inf (cache may predate the NaN fix)
+        nan_count = np.isnan(X).sum() + np.isinf(X).sum()
+        if nan_count > 0:
+            logger.info(f"  Cleaning {nan_count:,} NaN/inf values in cached data → 0")
+            np.nan_to_num(X, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+        np.nan_to_num(y, copy=False, nan=0.0)
         logger.info(f"✓ Cache loaded: X={X.shape}, y={y.shape}, {len(meta['label_names'])} labels")
         return X, y, meta['timestamps'], meta['label_names']
 
