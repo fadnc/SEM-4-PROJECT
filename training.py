@@ -323,10 +323,17 @@ class ModelTrainer:
             except:
                 metrics['brier'].append(np.nan)
         
-        # Compute averages
-        metrics['mean_auroc'] = np.nanmean(metrics['auroc'])
-        metrics['mean_auprc'] = np.nanmean(metrics['auprc'])
-        metrics['mean_brier'] = np.nanmean(metrics['brier'])
+        # Compute averages (handle all-NaN case)
+        valid_auroc = [v for v in metrics['auroc'] if not np.isnan(v)]
+        valid_auprc = [v for v in metrics['auprc'] if not np.isnan(v)]
+        valid_brier = [v for v in metrics['brier'] if not np.isnan(v)]
+        metrics['mean_auroc'] = float(np.mean(valid_auroc)) if valid_auroc else 0.0
+        metrics['mean_auprc'] = float(np.mean(valid_auprc)) if valid_auprc else 0.0
+        metrics['mean_brier'] = float(np.mean(valid_brier)) if valid_brier else 1.0
+        
+        # Per-task dict for downstream
+        for task_idx in range(num_tasks):
+            metrics[f'task_{task_idx}_auroc'] = metrics['auroc'][task_idx] if task_idx < len(metrics['auroc']) else np.nan
         
         return metrics
     
@@ -372,6 +379,11 @@ class ModelTrainer:
                     f"batch={self.batch_size}×{self.grad_accum_steps}={eff_batch} | "
                     f"AMP={'ON' if self.use_amp else 'OFF'} | epochs={self.epochs}")
         
+        # Use a unique checkpoint path per training session (avoids collisions)
+        import uuid
+        self._best_ckpt = os.path.join('models', f'_best_{uuid.uuid4().hex[:8]}.pth')
+        os.makedirs('models', exist_ok=True)
+        
         for epoch in range(self.epochs):
             # Train
             train_loss = self.train_epoch(train_loader)
@@ -389,20 +401,23 @@ class ModelTrainer:
                     f"Mean AUROC: {metrics['mean_auroc']:.4f}"
                 )
             
-            # Early stopping
-            if val_loss < self.best_val_loss:
+            # Early stopping (skip if val_loss is NaN)
+            if not np.isnan(val_loss) and val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
                 self.patience_counter = 0
-                # Save best model
-                self.save_checkpoint('best_model.pth')
+                self.save_checkpoint(self._best_ckpt)
             else:
                 self.patience_counter += 1
                 if self.patience_counter >= self.patience:
                     logger.info(f"Early stopping at epoch {epoch+1}")
                     break
         
-        # Load best model
-        self.load_checkpoint('best_model.pth')
+        # Load best model (if checkpoint was saved)
+        if os.path.exists(self._best_ckpt):
+            self.load_checkpoint(self._best_ckpt)
+            os.remove(self._best_ckpt)  # Clean up temp checkpoint
+        else:
+            logger.warning("No checkpoint saved — using final epoch weights")
         
         return {
             'train_losses': self.train_losses,
