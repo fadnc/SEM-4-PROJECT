@@ -44,10 +44,8 @@ LSTM_CONFIG:
   batch_size: 64
   epochs: 50
 
-TCN_CONFIG:
-  num_channels: [64, 128, 256]
-  kernel_size: 3
-  dropout: 0.3
+# NOTE: TCN removed — BatchNorm1d collapses under FP16/AMP with imbalanced ICU labels.
+# Use lstm or xgboost for all tasks.
 
 # FIX: Updated to XGBoost 2.x API.
 #   - Removed: gpu_id (use device instead)
@@ -64,7 +62,7 @@ XGBOOST_CONFIG:
 
 # GPU training config (tuned for RTX 3050 4GB VRAM)
 GPU_CONFIG:
-  batch_size: 32           # Fits LSTM/TCN comfortably in 4GB
+  batch_size: 32           # Fits LSTM comfortably in 4GB
   grad_accum_steps: 2      # Effective batch = 32 × 2 = 64
   use_amp: true            # FP16 mixed precision (~2× memory savings)
   pin_memory: true         # Faster CPU→GPU transfer
@@ -134,9 +132,12 @@ URINE_OUTPUT_ITEMIDS:
   - 227489  # GU Irrigant/Round
 
 # Early stopping config
-# FIX: Increased patience from 10 → 20, added min_delta to prevent stopping
-# before the model has meaningfully converged. With 980K sequences and
-# batch_size=32, each epoch is long — 10 epochs was too aggressive.
 EARLY_STOPPING:
   patience: 20       # was 10
   min_delta: 0.0001  # minimum loss improvement to reset patience counter
+
+# Active model list (tcn removed)
+MODELS_TO_TRY:
+  - lstm
+  - transformer
+  - xgboost
