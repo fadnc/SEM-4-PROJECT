@@ -1,11 +1,11 @@
 """
 Machine Learning Models for ICU Prediction
-Implements LSTM, TCN, Transformer, MultitaskLSTM, and XGBoost models.
+Implements LSTM, Transformer, MultitaskLSTM, and XGBoost models.
 
-FIXES:
-  - XGBoostPredictor: removed deprecated gpu_id, tree_method='gpu_hist',
-    use_label_encoder. Now uses tree_method='hist', device='cuda' (XGBoost 2.x API).
-  - Auto GPU detection for XGBoost updated to match new API.
+CHANGES:
+  - TCN (TCNBlock, TCNModel) removed entirely.
+  - XGBoostPredictor: uses tree_method='hist', device='cuda' (XGBoost 2.x API).
+  - create_model factory updated — 'tcn' raises ValueError.
 """
 
 import torch
@@ -35,10 +35,10 @@ class LSTMModel(nn.Module):
                  bidirectional: bool = True):
         super(LSTMModel, self).__init__()
 
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.num_tasks = num_tasks
+        self.input_size   = input_size
+        self.hidden_size  = hidden_size
+        self.num_layers   = num_layers
+        self.num_tasks    = num_tasks
         self.bidirectional = bidirectional
 
         self.lstm = nn.LSTM(
@@ -67,99 +67,6 @@ class LSTMModel(nn.Module):
         lstm_out, _ = self.lstm(x)
         last_output = self.dropout(lstm_out[:, -1, :])
         outputs = [head(last_output) for head in self.task_heads]
-        return torch.cat(outputs, dim=1)
-
-
-# ── TCN ───────────────────────────────────────────────────────────────────────
-
-class TCNBlock(nn.Module):
-    """Temporal Convolutional Network block with dilated convolutions."""
-
-    def __init__(self, in_channels, out_channels, kernel_size, dilation, dropout=0.3):
-        super(TCNBlock, self).__init__()
-
-        self.padding = (kernel_size - 1) * dilation
-
-        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size,
-                               padding=self.padding, dilation=dilation)
-        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size,
-                               padding=self.padding, dilation=dilation)
-
-        self.norm1 = nn.BatchNorm1d(out_channels)
-        self.norm2 = nn.BatchNorm1d(out_channels)
-        self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(dropout)
-
-        self.downsample = (
-            nn.Conv1d(in_channels, out_channels, 1)
-            if in_channels != out_channels else None
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = x
-
-        out = self.conv1(x)
-        out = out[:, :, :-self.padding]
-        out = self.norm1(out)
-        out = self.relu(out)
-        out = self.dropout(out)
-
-        out = self.conv2(out)
-        out = out[:, :, :-self.padding]
-        out = self.norm2(out)
-        out = self.relu(out)
-        out = self.dropout(out)
-
-        if self.downsample is not None:
-            residual = self.downsample(residual)
-
-        return self.relu(out + residual)
-
-
-class TCNModel(nn.Module):
-    """Temporal Convolutional Network for multi-task ICU prediction."""
-
-    def __init__(self,
-                 input_size: int,
-                 num_channels: List[int] = None,
-                 kernel_size: int = 3,
-                 num_tasks: int = 6,
-                 dropout: float = 0.3):
-        super(TCNModel, self).__init__()
-
-        if num_channels is None:
-            num_channels = [64, 128, 256]
-
-        self.input_size = input_size
-        self.num_tasks = num_tasks
-        self.input_proj = nn.Conv1d(input_size, num_channels[0], 1)
-
-        layers = []
-        for i in range(len(num_channels)):
-            dilation = 2 ** i
-            in_ch = num_channels[i - 1] if i > 0 else num_channels[0]
-            out_ch = num_channels[i]
-            layers.append(TCNBlock(in_ch, out_ch, kernel_size, dilation, dropout))
-
-        self.tcn = nn.Sequential(*layers)
-        self.pool = nn.AdaptiveAvgPool1d(1)
-
-        self.task_heads = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(num_channels[-1], 128),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-                nn.Linear(128, 1),
-            )
-            for _ in range(num_tasks)
-        ])
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x.transpose(1, 2)
-        x = self.input_proj(x)
-        x = self.tcn(x)
-        x = self.pool(x).squeeze(-1)
-        outputs = [head(x) for head in self.task_heads]
         return torch.cat(outputs, dim=1)
 
 
@@ -295,11 +202,7 @@ class MultitaskLSTM(nn.Module):
 class XGBoostPredictor:
     """
     XGBoost baseline for multi-task prediction using flattened features.
-
-    FIX: Updated to XGBoost 2.x API:
-      - Removed deprecated tree_method='gpu_hist' → now tree_method='hist'
-      - Removed deprecated gpu_id parameter → now device='cuda' or device='cpu'
-      - Removed removed use_label_encoder parameter
+    Uses XGBoost 2.x API: tree_method='hist', device='cuda'/'cpu'.
     """
 
     def __init__(self,
@@ -309,14 +212,13 @@ class XGBoostPredictor:
                  n_estimators: int = 100,
                  subsample: float = 0.8,
                  tree_method: str = 'hist',
-                 gpu_id: int = 0):           # kept for API compat, mapped to device
+                 gpu_id: int = 0):
         self.num_tasks = num_tasks
         self.models = []
 
-        # FIX: Determine device using new XGBoost 2.x API
         import torch as _torch
         use_gpu = _torch.cuda.is_available()
-        device = f'cuda:{gpu_id}' if use_gpu else 'cpu'
+        device  = f'cuda:{gpu_id}' if use_gpu else 'cpu'
 
         if use_gpu:
             logger.info(f"XGBoost: using GPU (device={device}, tree_method=hist)")
@@ -324,7 +226,6 @@ class XGBoostPredictor:
             logger.info("XGBoost: using CPU (tree_method=hist)")
 
         for _ in range(num_tasks):
-            # FIX: XGBoost 2.x params — no gpu_hist, no gpu_id, no use_label_encoder
             model = xgb.XGBClassifier(
                 max_depth=max_depth,
                 learning_rate=learning_rate,
@@ -332,8 +233,8 @@ class XGBoostPredictor:
                 subsample=subsample,
                 objective='binary:logistic',
                 eval_metric='auc',
-                tree_method='hist',          # works for both CPU and GPU
-                device=device,              # replaces gpu_id + gpu_hist combo
+                tree_method='hist',
+                device=device,
                 random_state=42,
             )
             self.models.append(model)
@@ -344,22 +245,18 @@ class XGBoostPredictor:
 
     def fit(self, X: np.ndarray, y: np.ndarray, verbose: bool = False):
         X_flat = self.flatten_sequences(X)
-
         for i, model in enumerate(self.models):
             if len(np.unique(y[:, i])) < 2:
                 if verbose:
                     logger.info(f"Skipping task {i + 1}/{self.num_tasks} (degenerate labels)")
                 self.models[i] = None
                 continue
-
             if verbose:
                 logger.info(f"Training XGBoost task {i + 1}/{self.num_tasks}...")
-
             model.fit(X_flat, y[:, i], verbose=False)
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         X_flat = self.flatten_sequences(X)
-
         predictions = []
         for model in self.models:
             if model is None:
@@ -367,7 +264,6 @@ class XGBoostPredictor:
             else:
                 pred = model.predict_proba(X_flat)[:, 1]
                 predictions.append(pred)
-
         return np.column_stack(predictions)
 
     def predict(self, X: np.ndarray, threshold: float = 0.5) -> np.ndarray:
@@ -385,13 +281,11 @@ class MultiTaskLoss(nn.Module):
 
     def forward(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         task_losses = self.bce(predictions, targets).mean(dim=0)
-
         if self.task_weights is not None:
             weights = torch.tensor(self.task_weights, device=task_losses.device)
             weighted_losses = task_losses * weights
         else:
             weighted_losses = task_losses
-
         return weighted_losses.mean()
 
 
@@ -402,11 +296,13 @@ def create_model(model_type: str, config: dict):
     Factory function to create models.
 
     Args:
-        model_type: 'lstm', 'tcn', 'transformer', 'multitask_lstm', or 'xgboost'
-        config: Configuration dictionary (must contain 'input_size' and 'num_tasks')
+        model_type: 'lstm', 'transformer', 'multitask_lstm', or 'xgboost'
+        config: must contain 'input_size' and 'num_tasks'
+
+    Note: 'tcn' has been removed. Passing 'tcn' raises ValueError.
     """
     input_size = config.get('input_size', 50)
-    num_tasks = config.get('num_tasks', 6)
+    num_tasks  = config.get('num_tasks', 6)
 
     if model_type.lower() == 'lstm':
         lstm_config = config.get('LSTM_CONFIG', {})
@@ -417,16 +313,6 @@ def create_model(model_type: str, config: dict):
             num_tasks=num_tasks,
             dropout=lstm_config.get('dropout', 0.3),
             bidirectional=lstm_config.get('bidirectional', True),
-        )
-
-    elif model_type.lower() == 'tcn':
-        tcn_config = config.get('TCN_CONFIG', {})
-        return TCNModel(
-            input_size=input_size,
-            num_channels=tcn_config.get('num_channels', [64, 128, 256]),
-            kernel_size=tcn_config.get('kernel_size', 3),
-            num_tasks=num_tasks,
-            dropout=tcn_config.get('dropout', 0.3),
         )
 
     elif model_type.lower() == 'transformer':
@@ -460,24 +346,30 @@ def create_model(model_type: str, config: dict):
             learning_rate=xgb_config.get('learning_rate', 0.1),
             n_estimators=xgb_config.get('n_estimators', 100),
             subsample=xgb_config.get('subsample', 0.8),
-            tree_method='hist',   # always hist in 2.x; device param controls GPU
+            tree_method='hist',
             gpu_id=xgb_config.get('gpu_id', 0),
+        )
+
+    elif model_type.lower() == 'tcn':
+        raise ValueError(
+            "TCN has been removed from this project due to BatchNorm instability "
+            "under FP16/AMP with imbalanced ICU labels. Use 'lstm' or 'xgboost' instead."
         )
 
     else:
         raise ValueError(
-            f"Unknown model type: {model_type}. "
-            "Choose from: lstm, tcn, transformer, multitask_lstm, xgboost"
+            f"Unknown model type: '{model_type}'. "
+            "Choose from: lstm, transformer, multitask_lstm, xgboost"
         )
 
 
 if __name__ == "__main__":
-    logger.info("Testing model architectures...")
+    logger.info("Testing model architectures (TCN removed)...")
 
     batch_size = 32
-    seq_len = 24
+    seq_len    = 24
     input_size = 50
-    num_tasks = 6
+    num_tasks  = 6
 
     X = torch.randn(batch_size, seq_len, input_size)
     y = torch.randint(0, 2, (batch_size, num_tasks)).float()
@@ -485,10 +377,6 @@ if __name__ == "__main__":
     logger.info("\n=== Testing LSTM Model ===")
     lstm = LSTMModel(input_size, hidden_size=128, num_tasks=num_tasks)
     print(f"LSTM output shape: {lstm(X).shape}")
-
-    logger.info("\n=== Testing TCN Model ===")
-    tcn = TCNModel(input_size, num_channels=[64, 128, 256], num_tasks=num_tasks)
-    print(f"TCN output shape: {tcn(X).shape}")
 
     logger.info("\n=== Testing Transformer Model ===")
     transformer = TransformerModel(input_size, num_tasks=num_tasks)

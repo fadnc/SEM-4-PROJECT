@@ -2,11 +2,12 @@
 Base Predictor — Shared logic for all ICU prediction tasks.
 
 CHANGES:
-  - task_name + model_name forwarded to ModelTrainer.train() for labeled epoch bars
-  - Overall model-comparison bar per task (lstm → tcn → transformer → xgboost)
-  - XGBoost training wrapped in a tqdm spinner so it's clear when it's running
-  - clear_gpu_memory() called before AND after each model
-  - _extract_task_labels logs clearly when label indices are missing
+  - MODELS_TO_TRY: removed 'tcn' → now ['lstm', 'transformer', 'xgboost']
+  - All TCN references removed from training loop, logging, and docstrings.
+  - task_name + model_name forwarded to ModelTrainer.train() for labeled epoch bars.
+  - Overall model-comparison bar per task.
+  - clear_gpu_memory() called before AND after each model.
+  - _extract_task_labels logs clearly when label indices are missing.
 """
 
 import os
@@ -35,7 +36,7 @@ class BasePredictor(ABC):
     TASK_DESCRIPTION: str       = ""
     WINDOWS:          List[int] = []
     LABEL_PREFIX:     str       = ""
-    MODELS_TO_TRY:    List[str] = ['lstm', 'tcn', 'transformer', 'xgboost']
+    MODELS_TO_TRY:    List[str] = ['lstm', 'transformer', 'xgboost']
 
     def __init__(self, config_path: str = 'config.yaml'):
         self.config       = self._load_config(config_path)
@@ -113,7 +114,7 @@ class BasePredictor(ABC):
             try:
                 clear_gpu_memory()
 
-                metrics = self._train_single_model(
+                metrics    = self._train_single_model(
                     model_name, X, task_labels, timestamps, input_size, num_tasks
                 )
                 comparison[model_name] = metrics
@@ -215,17 +216,16 @@ class BasePredictor(ABC):
         return self._train_dl_model(model_name, X, y, timestamps, config)
 
     def _train_dl_model(self, model_name: str, X, y, timestamps, config) -> Dict:
-        """Train LSTM / TCN / Transformer with epoch-level progress bar."""
+        """Train LSTM / Transformer with epoch-level progress bar."""
         model   = create_model(model_name, config)
         trainer = ModelTrainer(model, config)
         log_gpu_memory(f"{self.TASK_NAME}/{model_name} init")
 
         splits            = trainer.temporal_split(X, y, timestamps)
         train_X, train_y  = splits['train']
-        val_X, val_y      = splits['val']
-        test_X, test_y    = splits['test']
+        val_X,   val_y    = splits['val']
+        test_X,  test_y   = splits['test']
 
-        # Pass task_name + model_name so the epoch bar has a meaningful label
         trainer.train(
             train_X, train_y, val_X, val_y,
             task_name=self.TASK_NAME,
@@ -253,7 +253,7 @@ class BasePredictor(ABC):
         }
 
     def _train_xgboost(self, X, y, timestamps, config) -> Dict:
-        """Train XGBoost with a tqdm spinner so the user knows it's running."""
+        """Train XGBoost with a tqdm spinner."""
         xgb_config = config.get('XGBOOST_CONFIG', {})
 
         predictor = XGBoostPredictor(
@@ -271,7 +271,6 @@ class BasePredictor(ABC):
         val_X,   val_y    = splits['val']
         test_X,  test_y   = splits['test']
 
-        # Spinner-style bar for XGBoost (indeterminate duration)
         with tqdm(
             total=y.shape[1],
             desc=f"  [{self.TASK_NAME}] XGBoost trees   ",
@@ -280,10 +279,6 @@ class BasePredictor(ABC):
             dynamic_ncols=True,
             leave=False,
         ) as xgb_bar:
-            # Monkey-patch fit to update bar per task
-            orig_fit = predictor.fit.__func__ if hasattr(predictor.fit, '__func__') else None
-
-            # Simple approach: fit all, then update bar at end
             predictor.fit(train_X, train_y, verbose=False)
             xgb_bar.update(y.shape[1])
 
