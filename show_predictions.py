@@ -41,8 +41,8 @@ def main():
         return
 
     task_order = [
-        'mortality', 'sepsis', 'aki', 'hypotension',
-        'vasopressor', 'ventilation', 'los', 'readmission', 'composite',
+        'mortality', 'sepsis', 'aki',
+        'vasopressor', 'ventilation', 'los', 'readmission',
     ]
 
     print(f"\n{'#':>3} | {'Task':<25} | {'Best Model':<18} | {'Best AUROC':>10} | Models Tried")
@@ -77,17 +77,14 @@ def main():
     print("=" * 90)
     print(f"\nPREDICTION CATEGORIES:")
 
-    # TCN removed from model descriptions
     categories = [
         ("[1]   MORTALITY",     "LSTM / XGBoost — 6/12/24h death prediction"),
         ("[2]   SEPSIS",        "Transformer / LSTM — SIRS + infection at 6/12/24h"),
         ("[3]   AKI",           "XGBoost / LSTM — KDIGO stages 1-3 at 24/48h"),
-        ("[4]   HYPOTENSION",   "XGBoost / LSTM — MAP < 65 mmHg at 1/3/6h"),
-        ("[5]   VASOPRESSOR",   "XGBoost primary — drug requirement at 6/12h"),
-        ("[6]   VENTILATION",   "LSTM / XGBoost — mechanical vent at 6/12/24h"),
-        ("[7]   LENGTH OF STAY","XGBoost primary — short (<24h) / long (>72h) stay"),
-        ("[8]   READMISSION",   "XGBoost + SHAP — 30-day ICU readmission"),
-        ("[9]   COMPOSITE",     "MultitaskLSTM — unified deterioration score"),
+        ("[4]   VASOPRESSOR",   "XGBoost primary — drug requirement at 6/12h"),
+        ("[5]   VENTILATION",   "LSTM / XGBoost — mechanical vent at 6/12/24h"),
+        ("[6]   LENGTH OF STAY","XGBoost primary — short (<24h) / long (>72h) stay"),
+        ("[7]   READMISSION",   "XGBoost + SHAP — 30-day ICU readmission"),
     ]
     for cat, desc in categories:
         print(f"  {cat:<20s} — {desc}")
