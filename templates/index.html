@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% block title %}Smart ICU — Overview{% endblock %}
+
+{% block extra_css %}
+    .hero-banner {
+      background: linear-gradient(135deg, var(--primary) 0%, #0ea5e9 60%, #06b6d4 100%);
+      border-radius: var(--radius); padding: 40px 36px;
+      margin-bottom: 24px; position: relative; overflow: hidden;
+      color: white;
+    }
+    [data-theme="dark"] .hero-banner {
+      background: linear-gradient(135deg, #0c4a6e 0%, #164e63 60%, #1e3a5f 100%);
+    }
+    .hero-banner::before {
+      content: ''; position: absolute; top: -80px; right: -60px;
+      width: 300px; height: 300px; border-radius: 50%;
+      background: rgba(255,255,255,0.08); pointer-events: none;
+    }
+    .hero-banner::after {
+      content: ''; position: absolute; bottom: -40px; left: 30%;
+      width: 200px; height: 200px; border-radius: 50%;
+      background: rgba(255,255,255,0.05); pointer-events: none;
+    }
+    .hero-title { font-size: 36px; font-weight: 700; margin-bottom: 8px; letter-spacing: -0.02em; }
+    .hero-sub { font-size: 15px; opacity: 0.85; max-width: 500px; line-height: 1.6; }
+    .hero-tag {
+      display: inline-flex; align-items: center; gap: 6px; margin-top: 16px;
+      font-size: 12px; font-weight: 600; padding: 5px 14px;
+      background: rgba(255,255,255,0.15); border-radius: 100px;
+      backdrop-filter: blur(4px);
+    }
+    .model-item {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 0; border-bottom: 1px solid var(--border);
+      transition: padding-left var(--transition);
+    }
+    .model-item:last-child { border-bottom: none; }
+    .model-item:hover { padding-left: 4px; }
+    .model-name { font-size: 13px; color: var(--text-2); font-weight: 500; }
+    .model-tag {
+      font-size: 10px; font-weight: 600; padding: 2px 8px;
+      border-radius: 100px; background: var(--success-bg);
+      color: var(--success); border: 1px solid var(--success-border);
+    }
+    .link-card {
+      display: block; text-decoration: none;
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 24px;
+      box-shadow: var(--shadow); position: relative; overflow: hidden;
+      transition: all var(--transition);
+    }
+    .link-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); }
+    .link-card::after {
+      content: '→'; position: absolute; right: 20px; top: 50%;
+      transform: translateY(-50%); font-size: 18px; color: var(--text-3);
+      transition: all var(--transition);
+    }
+    .link-card:hover::after { color: var(--primary); right: 16px; }
+    .link-icon { font-size: 24px; margin-bottom: 10px; }
+    .link-title { font-size: 14px; font-weight: 600; color: var(--text-1); margin-bottom: 4px; }
+    .link-desc { font-size: 13px; color: var(--text-3); max-width: 80%; }
+{% endblock %}
+
+{% block content %}
+<!-- Hero -->
+<div class="hero-banner fade-up">
+  <div class="hero-title">Smart ICU Assistant</div>
+  <div class="hero-sub">Real-time ICU patient monitoring and multi-task risk prediction powered by deep learning ensembles on MIMIC-III clinical data.</div>
+  <div class="hero-tag">🏥 {{ stats.total_stays | default(0) }} ICU Stays Monitored</div>
+</div>
+
+<!-- Stat Cards -->
+<div class="grid-4 fade-up fade-up-1" style="margin-bottom: 20px;">
+  <div class="stat-tile">
+    <div class="stat-icon" style="background: var(--primary-bg); color: var(--primary);">🛏️</div>
+    <div class="stat-label">Total ICU Stays</div>
+    <div class="stat-value" style="color:var(--primary)">{{ stats.total_stays | default('—') }}</div>
+  </div>
+  <div class="stat-tile">
+    <div class="stat-icon" style="background: var(--success-bg); color: var(--success);">👤</div>
+    <div class="stat-label">Unique Patients</div>
+    <div class="stat-value" style="color:var(--success)">{{ stats.total_patients | default('—') }}</div>
+  </div>
+  <div class="stat-tile">
+    <div class="stat-icon" style="background: var(--warning-bg); color: var(--warning);">📊</div>
+    <div class="stat-label">Mean Age</div>
+    <div class="stat-value">{{ stats.mean_age | default('—') }}</div>
+    <div class="stat-sub">years</div>
+  </div>
+  <div class="stat-tile">
+    <div class="stat-icon" style="background: var(--danger-bg); color: var(--danger);">⏱️</div>
+    <div class="stat-label">Mean LOS</div>
+    <div class="stat-value" style="color:var(--warning)">{{ '%.1f' | format(stats.mean_los_hours) if stats.mean_los_hours else '—' }}</div>
+    <div class="stat-sub">hours</div>
+  </div>
+</div>
+
+<!-- Models & Risk -->
+<div class="grid-2 fade-up fade-up-2">
+  <div class="card">
+    <div class="card-head">
+      <span class="card-label">🧠 Trained Models</span>
+      <span class="card-badge">{{ models | length }} loaded</span>
+    </div>
+    <div class="card-body">
+      {% if models %}
+        {% for task in models %}
+        <div class="model-item">
+          <span class="model-name">{{ task }}</span>
+          <span class="model-tag">● Ready</span>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="empty-state">
+          <div class="empty-icon">🧠</div>
+          <div class="empty-text">No models loaded.<br>Run the training pipeline first.</div>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="card-label">⚠️ Risk Distribution</span>
+      <span class="card-badge">{{ stats.total_stays | default(0) }} patients</span>
+    </div>
+    <div class="card-body">
+      {% if stats.risk_dist %}
+        {% for level, count in stats.risk_dist.items() %}
+        <div class="bar-row">
+          <span class="bar-label">
+            <span class="badge badge-{{ level | lower }}" style="font-size:10px;">{{ level }}</span>
+          </span>
+          <div class="bar-track">
+            {% set pct = (count / stats.total_stays * 100) if stats.total_stays else 0 %}
+            <div class="bar-fill" style="width:{{ pct }}%; background:{% if level == 'HIGH' %}var(--danger){% elif level == 'MEDIUM' %}var(--warning){% else %}var(--success){% endif %};"></div>
+          </div>
+          <span class="bar-value" style="color:var(--text-2);">{{ count }}</span>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="empty-state">
+          <div class="empty-text">Risk data loading…</div>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- Quick Links -->
+<div class="grid-3 fade-up fade-up-3" style="margin-top: 20px;">
+  <a href="/patients" class="link-card" style="border-left: 3px solid var(--primary);">
+    <div class="link-icon">👥</div>
+    <div class="link-title">Browse Patients</div>
+    <div class="link-desc">Search and explore all ICU stays in MIMIC-III</div>
+  </a>
+  <a href="/validation" class="link-card" style="border-left: 3px solid var(--success);">
+    <div class="link-icon">🎯</div>
+    <div class="link-title">Validation Demo</div>
+    <div class="link-desc">Predict test patients and compare with ground truth</div>
+  </a>
+  <a href="/docs" target="_blank" class="link-card" style="border-left: 3px solid var(--warning);">
+    <div class="link-icon">📋</div>
+    <div class="link-title">API Documentation</div>
+    <div class="link-desc">Swagger UI with all REST endpoints</div>
+  </a>
+</div>
+{% endblock %}

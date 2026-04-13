@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}Smart ICU — Patient {{ patient.icustay_id }}{% endblock %}
+
+{% block extra_css %}
+    .patient-hero {
+      background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-card-2) 100%);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 28px 32px; margin-bottom: 20px;
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 20px; box-shadow: var(--shadow);
+    }
+    .risk-pill {
+      font-size: 22px; font-weight: 700; padding: 8px 24px;
+      border-radius: var(--radius-sm); letter-spacing: 0.02em;
+    }
+    .risk-HIGH   { background: var(--danger-bg); color: var(--danger); border: 2px solid var(--danger-border); }
+    .risk-MEDIUM { background: var(--warning-bg); color: var(--warning); border: 2px solid var(--warning-border); }
+    .risk-LOW    { background: var(--success-bg); color: var(--success); border: 2px solid var(--success-border); }
+    .info-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 0; border-bottom: 1px solid var(--border);
+    }
+    .info-row:last-child { border-bottom: none; }
+    .info-key { font-size: 12px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.04em; }
+    .info-val { font-size: 13px; color: var(--text-1); font-weight: 500; }
+    .group-header {
+      font-size: 11px; font-weight: 700; color: var(--primary);
+      letter-spacing: 0.06em; text-transform: uppercase;
+      margin-bottom: 10px; padding-bottom: 6px;
+      border-bottom: 2px solid var(--primary-bg);
+    }
+{% endblock %}
+
+{% block content %}
+<!-- Breadcrumb -->
+<div class="page-header fade-up">
+  <div class="page-eyebrow">
+    <a href="/patients" style="color:var(--text-3); text-decoration:none;">&larr; All Patients</a>
+    &middot; ICU Stay #{{ patient.icustay_id }}
+  </div>
+  <h1 class="page-title">Patient #{{ patient.icustay_id }}</h1>
+</div>
+
+<!-- Hero -->
+<div class="patient-hero fade-up fade-up-1">
+  <div>
+    <div style="font-size:12px; font-weight:600; color:var(--text-3); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;">Composite Risk Score</div>
+    <div style="font-size:42px; font-weight:700; line-height:1; color:var(--text-1);">
+      {{ '%.2f' | format(pred.composite_score) }}
+    </div>
+    <div style="font-size:12px; color:var(--text-3); margin-top:4px;">Source: {{ pred.source }}</div>
+  </div>
+  <div class="risk-pill risk-{{ pred.risk_level }}">{{ pred.risk_level }} RISK</div>
+</div>
+
+<!-- Demographics + SHAP -->
+<div class="grid-2 fade-up fade-up-2" style="margin-bottom: 16px;">
+  <div class="card">
+    <div class="card-head">
+      <span class="card-label">🏥 Demographics & Admission</span>
+    </div>
+    <div class="card-body">
+      <div class="info-row">
+        <span class="info-key">Subject ID</span>
+        <span class="info-val" style="font-family:var(--ff-mono); color:var(--primary);">{{ patient.subject_id }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-key">Age / Gender</span>
+        <span class="info-val">{{ '%.0f' | format(patient.age) if patient.age else '—' }} {{ patient.gender or '' }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-key">Length of Stay</span>
+        <span class="info-val" style="color:var(--warning);">{{ '%.1f' | format(patient.los_hours) if patient.los_hours else '—' }}h</span>
+      </div>
+      <div class="info-row">
+        <span class="info-key">Diagnosis</span>
+        <span class="info-val">{{ patient.diagnosis or '—' }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-key">Care Unit</span>
+        <span class="info-val">{{ patient.first_careunit or '—' }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-key">Admission Type</span>
+        <span class="info-val">{{ patient.admission_type or '—' }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-key">Expired</span>
+        <span class="info-val" style="color:{% if patient.expire_flag %}var(--danger){% else %}var(--success){% endif %}; font-weight:600;">
+          {{ 'Yes' if patient.expire_flag else 'No' }}
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="card-label">📊 Feature Importances</span>
+      <span class="card-badge">SHAP</span>
+    </div>
+    <div class="card-body">
+      {% if pred.shap_features %}
+      {% for feat in pred.shap_features[:6] %}
+      <div class="bar-row">
+        <span class="bar-label" style="font-family:var(--ff-mono); font-size:12px; min-width:160px;">{{ feat.feature }}</span>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:{{ [feat.value * 300, 100] | min }}%; background:var(--primary);"></div>
+        </div>
+        <span class="bar-value" style="color:var(--primary);">{{ '%.3f' | format(feat.value) }}</span>
+      </div>
+      {% endfor %}
+      {% else %}
+      <div class="empty-state">
+        <div class="empty-icon">📊</div>
+        <div class="empty-text">SHAP explanations not available for this patient.</div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- Predictions -->
+<div class="card fade-up fade-up-3">
+  <div class="card-head">
+    <span class="card-label">🔬 Risk Predictions — All Tasks</span>
+    <span class="card-badge">{{ pred.source }}</span>
+  </div>
+  <div class="card-body">
+    {% for group_name, labels in pred.groups.items() %}
+    <div style="margin-bottom: 24px;">
+      <div class="group-header">{{ group_name }}</div>
+      {% for label, score in labels.items() %}
+      <div class="bar-row">
+        <span class="bar-label" style="font-size:13px; font-weight:500;">{{ label }}</span>
+        <div class="bar-track">
+          {% set color = 'var(--danger)' if score > 0.6 else 'var(--warning)' if score > 0.3 else 'var(--success)' %}
+          <div class="bar-fill" style="width:{{ (score * 100) }}%; background:{{ color }};"></div>
+        </div>
+        <span class="bar-value" style="color:{{ color }};">{{ '%.1f' | format(score * 100) }}%</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Smart ICU — Patients{% endblock %}
+
+{% block content %}
+<div class="page-header fade-up">
+  <div class="page-eyebrow">👥 Patient Browser</div>
+  <h1 class="page-title">ICU Patients</h1>
+  <p class="page-sub">Browse all ICU stays from MIMIC-III. Click any row for detailed predictions.</p>
+</div>
+
+<!-- Search -->
+<div class="card fade-up fade-up-1">
+  <div class="card-head">
+    <span class="card-label">🔍 Search & Filter</span>
+    <span class="card-badge">{{ total }} results</span>
+  </div>
+  <div class="card-body">
+    <form method="get" action="/patients" style="display:flex; gap:10px; flex-wrap:wrap;">
+      <input type="text" name="q" value="{{ q }}" placeholder="Search by ID, diagnosis, unit..."
+        style="flex:1; min-width:200px; padding:10px 14px; background:var(--bg-input); border:1px solid var(--border-2);
+        border-radius:var(--radius-sm); color:var(--text-1); font-size:13px; outline:none;
+        transition: border-color var(--transition);
+        font-family: inherit;" onfocus="this.style.borderColor='var(--primary)'" onblur="this.style.borderColor='var(--border-2)'" />
+      <select name="risk" style="padding:10px 14px; background:var(--bg-input); border:1px solid var(--border-2);
+        border-radius:var(--radius-sm); color:var(--text-1); font-size:13px; font-family:inherit;">
+        <option value="">All Risk Levels</option>
+        <option value="HIGH" {% if risk == 'HIGH' %}selected{% endif %}>🔴 HIGH</option>
+        <option value="MEDIUM" {% if risk == 'MEDIUM' %}selected{% endif %}>🟡 MEDIUM</option>
+        <option value="LOW" {% if risk == 'LOW' %}selected{% endif %}>🟢 LOW</option>
+      </select>
+      <button type="submit" class="btn btn-primary">Search</button>
+    </form>
+  </div>
+</div>
+
+<!-- Table -->
+<div class="card fade-up fade-up-2">
+  <div class="card-head">
+    <span class="card-label">ICU Stays</span>
+    <span class="card-badge">Page {{ page }} / {{ pages }}</span>
+  </div>
+  <div class="card-body" style="padding:0; overflow-x:auto;">
+    {% if patients %}
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>ICU Stay ID</th>
+          <th>Subject</th>
+          <th>Age</th>
+          <th>Gender</th>
+          <th>Diagnosis</th>
+          <th>Unit</th>
+          <th>LOS (hrs)</th>
+          <th>Risk</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in patients %}
+        <tr onclick="window.location='/patients/{{ p.icustay_id }}'">
+          <td style="font-family:var(--ff-mono); font-weight:600; color:var(--primary);">{{ p.icustay_id }}</td>
+          <td style="font-family:var(--ff-mono);">{{ p.subject_id }}</td>
+          <td>{{ '%.0f' | format(p.age) if p.age else '—' }}</td>
+          <td>{{ p.gender or '—' }}</td>
+          <td style="max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ p.diagnosis or '—' }}</td>
+          <td>{{ p.first_careunit or '—' }}</td>
+          <td style="font-family:var(--ff-mono);">{{ '%.1f' | format(p.los_hours) if p.los_hours else '—' }}</td>
+          <td><span class="badge badge-{{ p.risk_level | lower }}">{{ p.risk_level }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state">
+      <div class="empty-icon">🔍</div>
+      <div class="empty-text">No patients found matching your search.</div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Pagination -->
+{% if pages > 1 %}
+<div class="pagination fade-up fade-up-3">
+  {% if page > 1 %}
+    <a href="/patients?q={{ q }}&risk={{ risk }}&page={{ page - 1 }}">&larr; Prev</a>
+  {% endif %}
+  {% for p_num in range(1, pages + 1) %}
+    {% if p_num <= 5 or p_num > pages - 3 or (p_num >= page - 1 and p_num <= page + 1) %}
+      <a href="/patients?q={{ q }}&risk={{ risk }}&page={{ p_num }}" class="{% if p_num == page %}active{% endif %}">{{ p_num }}</a>
+    {% elif p_num == 6 or p_num == pages - 3 %}
+      <span style="color:var(--text-3);">...</span>
+    {% endif %}
+  {% endfor %}
+  {% if page < pages %}
+    <a href="/patients?q={{ q }}&risk={{ risk }}&page={{ page + 1 }}">Next &rarr;</a>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

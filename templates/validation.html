@@ -1,0 +1,247 @@
+{% extends "base.html" %}
+{% block title %}Smart ICU — Validation Demo{% endblock %}
+
+{% block extra_css %}
+    .val-hero {
+      background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-card-2) 100%);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 28px 32px; margin-bottom: 20px; position: relative; overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+    .val-hero::before {
+      content: ''; position: absolute; top: -50px; right: -50px;
+      width: 180px; height: 180px; border-radius: 50%;
+      background: radial-gradient(circle, var(--primary-bg) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .summary-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-top: 18px; }
+    .summary-stat {
+      background: var(--bg-card-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+      padding: 14px 16px; text-align: center;
+    }
+    .summary-stat .s-val { font-size: 24px; font-weight: 700; line-height: 1; }
+    .summary-stat .s-label {
+      font-size: 10px; font-weight: 600; color: var(--text-3);
+      letter-spacing: 0.06em; text-transform: uppercase; margin-top: 4px;
+    }
+    .val-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .val-row {
+      display: grid; grid-template-columns: 150px 1fr 50px 30px 30px; gap: 10px;
+      align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border);
+    }
+    .val-row:last-child { border-bottom: none; }
+    .val-lbl { font-family: var(--ff-mono); font-size: 12px; color: var(--text-2); }
+    .val-bar-wrap { display: flex; align-items: center; gap: 6px; }
+    .val-gt { font-family: var(--ff-mono); font-size: 13px; font-weight: 600; text-align: center; }
+    .threshold-line {
+      position: absolute; top: 0; bottom: 0; width: 1px;
+      background: var(--text-3); opacity: 0.5;
+    }
+
+    @media (max-width: 768px) {
+      .summary-grid { grid-template-columns: repeat(2, 1fr); }
+      .val-detail-grid { grid-template-columns: 1fr; }
+      .val-row { grid-template-columns: 120px 1fr 40px 24px 24px; font-size: 10px; }
+    }
+{% endblock %}
+
+{% block content %}
+<div class="page-header fade-up">
+  <div class="page-eyebrow">🎯 Model Validation &middot; Test Split</div>
+  <h1 class="page-title">Validate Predictions</h1>
+  <p class="page-sub">Pick a patient from the test split, run trained models, and compare predictions against ground truth labels.</p>
+</div>
+
+{% if error %}
+<div class="card fade-up" style="border-left: 3px solid var(--danger);">
+  <div class="card-body">
+    <div style="color:var(--danger); font-size:13px; font-weight:500;">{{ error }}</div>
+  </div>
+</div>
+{% else %}
+
+<!-- Summary -->
+<div class="val-hero fade-up fade-up-1">
+  <div style="font-size:12px; font-weight:600; color:var(--primary); letter-spacing:0.06em; text-transform:uppercase; margin-bottom:6px;">Test Set Summary</div>
+  <div style="font-size:14px; color:var(--text-2);">
+    {{ summary.n_test }} test samples &middot; {{ summary.n_labels }} prediction labels &middot;
+    Source: <span style="color:var(--primary); font-weight:600;">{{ summary.source }}</span>
+  </div>
+  <div class="summary-grid">
+    <div class="summary-stat">
+      <div class="s-val" style="color:var(--primary);">{{ summary.n_test }}</div>
+      <div class="s-label">Test Samples</div>
+    </div>
+    <div class="summary-stat">
+      <div class="s-val" style="color:var(--success);">{{ summary.n_labels }}</div>
+      <div class="s-label">Labels</div>
+    </div>
+    <div class="summary-stat">
+      <div class="s-val" style="color:var(--warning);">{{ '%.1f' | format(summary.avg_accuracy * 100) }}%</div>
+      <div class="s-label">Avg Accuracy</div>
+    </div>
+    <div class="summary-stat">
+      <div class="s-val" style="color:var(--text-1);">{{ summary.n_models }}</div>
+      <div class="s-label">Models Loaded</div>
+    </div>
+    <div class="summary-stat">
+      <div class="s-val" style="color:var(--accent);">{{ '%.3f' | format(summary.avg_auroc) if summary.avg_auroc else '—' }}</div>
+      <div class="s-label">Avg AUROC</div>
+    </div>
+  </div>
+</div>
+
+<!-- Patient Selection -->
+<div class="val-detail-grid fade-up fade-up-2">
+
+  <!-- Left: Test Patient List -->
+  <div class="card">
+    <div class="card-head">
+      <span class="card-label">Test Patients</span>
+      <span class="card-badge">Page {{ page }} / {{ pages }}</span>
+    </div>
+    <div class="card-body" style="padding:0;">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>ICU Stay</th>
+            <th>Subject</th>
+            <th>Accuracy</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for pt in test_patients %}
+          <tr {% if selected and selected.index == pt.index %}style="background:var(--primary-bg);"{% endif %}>
+            <td style="font-family:var(--ff-mono); color:var(--text-3);">{{ pt.index }}</td>
+            <td style="font-family:var(--ff-mono); color:var(--primary); font-weight:600;">{{ pt.icustay_id or '—' }}</td>
+            <td style="font-family:var(--ff-mono);">{{ pt.subject_id or '—' }}</td>
+            <td>
+              {% if pt.accuracy is not none %}
+              <span style="font-family:var(--ff-mono); font-size:12px; font-weight:600; color:{% if pt.accuracy >= 0.8 %}var(--success){% elif pt.accuracy >= 0.6 %}var(--warning){% else %}var(--danger){% endif %};">
+                {{ '%.0f' | format(pt.accuracy * 100) }}%
+              </span>
+              {% else %}
+              <span style="color:var(--text-3);">—</span>
+              {% endif %}
+            </td>
+            <td>
+              <a href="/validation?page={{ page }}&idx={{ pt.index }}" class="btn" style="padding:4px 12px; font-size:11px;">
+                {% if selected and selected.index == pt.index %}Selected{% else %}Select{% endif %}
+              </a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <!-- Pagination -->
+    {% if pages > 1 %}
+    <div style="padding:12px 20px; border-top:1px solid var(--border); display:flex; gap:4px; justify-content:center;">
+      {% if page > 1 %}
+        <a href="/validation?page={{ page - 1 }}{% if selected %}&idx={{ selected.index }}{% endif %}" class="btn" style="padding:4px 10px; font-size:10px;">&larr;</a>
+      {% endif %}
+      {% for p_num in range(1, pages + 1) %}
+        {% if p_num <= 3 or p_num > pages - 2 or (p_num >= page - 1 and p_num <= page + 1) %}
+          <a href="/validation?page={{ p_num }}{% if selected %}&idx={{ selected.index }}{% endif %}" class="btn {% if p_num == page %}btn-primary{% endif %}" style="padding:4px 10px; font-size:10px;">{{ p_num }}</a>
+        {% elif p_num == 4 %}
+          <span style="color:var(--text-3); font-size:11px;">…</span>
+        {% endif %}
+      {% endfor %}
+      {% if page < pages %}
+        <a href="/validation?page={{ page + 1 }}{% if selected %}&idx={{ selected.index }}{% endif %}" class="btn" style="padding:4px 10px; font-size:10px;">&rarr;</a>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Right: Selected Patient Detail -->
+  <div>
+    {% if selected %}
+    <div class="card">
+      <div class="card-head">
+        <span class="card-label">🔬 Predictions vs Ground Truth</span>
+        <span class="card-badge">Sample #{{ selected.index }}</span>
+      </div>
+      <div class="card-body">
+        <!-- Score Summary -->
+        <div style="display:flex; gap:12px; margin-bottom:18px; flex-wrap:wrap;">
+          <div class="summary-stat" style="flex:1; min-width:100px;">
+            <div class="s-val" style="color:{% if selected.accuracy >= 0.8 %}var(--success){% elif selected.accuracy >= 0.6 %}var(--warning){% else %}var(--danger){% endif %};">
+              {{ selected.correct }}/{{ selected.total }}
+            </div>
+            <div class="s-label">Correct</div>
+          </div>
+          <div class="summary-stat" style="flex:1; min-width:100px;">
+            <div class="s-val" style="color:var(--primary);">{{ '%.0f' | format(selected.accuracy * 100) }}%</div>
+            <div class="s-label">Accuracy</div>
+          </div>
+          {% if selected.icustay_id %}
+          <div class="summary-stat" style="flex:1; min-width:100px;">
+            <div class="s-val" style="font-size:16px; color:var(--text-1);">{{ selected.icustay_id }}</div>
+            <div class="s-label">ICU Stay</div>
+          </div>
+          {% endif %}
+        </div>
+
+        <!-- Header -->
+        <div style="font-size:10px; font-weight:600; color:var(--text-3); letter-spacing:0.04em; text-transform:uppercase; margin-bottom:8px; display:grid; grid-template-columns:150px 1fr 50px 30px 30px; gap:10px;">
+          <span>Label</span><span>Predicted Prob</span><span>Pred</span><span>True</span><span></span>
+        </div>
+        {% for r in selected.results %}
+        <div class="val-row">
+          <span class="val-lbl">{{ r.label }}</span>
+          <div class="val-bar-wrap">
+            <div class="bar-track" style="position:relative;">
+              {% set color = 'var(--danger)' if r.prob > 0.6 else 'var(--warning)' if r.prob > 0.3 else 'var(--success)' %}
+              <div class="bar-fill" style="width:{{ (r.prob * 100) }}%; background:{{ color }};"></div>
+              <div class="threshold-line" style="left:50%;"></div>
+            </div>
+            <span style="font-family:var(--ff-mono); font-size:11px; color:var(--text-3); min-width:36px; text-align:right;">{{ '%.2f' | format(r.prob) }}</span>
+          </div>
+          <span class="val-gt" style="color:{% if r.pred == 1 %}var(--warning){% else %}var(--success){% endif %};">{{ r.pred }}</span>
+          <span class="val-gt" style="color:{% if r.true == 1 %}var(--danger){% else %}var(--success){% endif %};">{{ r.true }}</span>
+          <span class="match-icon">{% if r.match %}✅{% else %}❌{% endif %}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% else %}
+    <div class="card">
+      <div class="card-body">
+        <div class="empty-state">
+          <div class="empty-icon">🎯</div>
+          <div class="empty-text">Select a test patient from the list<br/>to see prediction vs ground truth comparison.</div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+</div>
+
+<!-- Per-Task AUROC -->
+{% if summary.per_task_auroc %}
+<div class="card fade-up fade-up-3" style="margin-top:20px;">
+  <div class="card-head">
+    <span class="card-label">📈 Per-Task AUROC on Test Set</span>
+    <span class="card-badge">{{ summary.per_task_auroc | length }} tasks</span>
+  </div>
+  <div class="card-body">
+    {% for label, auroc in summary.per_task_auroc.items() %}
+    <div class="bar-row">
+      <span class="bar-label" style="font-family:var(--ff-mono); font-size:12px;">{{ label }}</span>
+      <div class="bar-track">
+        {% set acolor = 'var(--success)' if auroc >= 0.7 else 'var(--warning)' if auroc >= 0.5 else 'var(--danger)' %}
+        <div class="bar-fill" style="width:{{ (auroc * 100) }}%; background:{{ acolor }};"></div>
+      </div>
+      <span class="bar-value" style="color:{{ acolor }};">{{ '%.3f' | format(auroc) }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% endif %}
+{% endblock %}
