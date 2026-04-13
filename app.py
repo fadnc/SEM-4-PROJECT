@@ -24,18 +24,34 @@ Endpoints (same contract as Flask version):
     GET  /api/alerts
     GET  /docs                                  → Swagger UI (auto)
     GET  /redoc                                 → ReDoc (auto)
+
+FIXES applied in this revision:
+  1. SHAP "DataFrame is ambiguous" — outputevents was wrongly passed as
+     cached("labevents", ...) which is a DataFrame. Changed to None (safe
+     default) since outputevents is not separately cached in the app.
+  2. Model loading for ensemble/stacked_ensemble — these produce a
+     placeholder model_path string like "ensemble (no single checkpoint)",
+     not a real file. Now falls back to the best individual model
+     (xgboost > lstm > transformer) that has an actual saved checkpoint.
+  3. Jinja2 | min(100) crash — min() is a sequence filter in Jinja2, not
+     a numeric clamp. Fixed in the template by using an inline if expression.
+     Also added a custom 'clamp' filter to Jinja2 environment as a safety net.
 """
 
 # ── Stdlib ────────────────────────────────────────────────────────────────────
-import os, sys, json, glob, pickle, traceback, math
+import os, sys, json, glob, pickle, traceback, math, warnings
 from datetime import datetime, timedelta
 from typing import Any, Optional
 from pathlib import Path
 
+# Suppress noisy sklearn/LGBMClassifier feature-name warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
+
 # ── Third-party ───────────────────────────────────────────────────────────────
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import numpy as np
@@ -65,6 +81,20 @@ STATIC_DIR = os.path.join(PROJECT_ROOT, "static")
 if os.path.isdir(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+# ── Jinja2 Templates ─────────────────────────────────────────────────────────
+TEMPLATES_DIR = os.path.join(PROJECT_ROOT, "templates")
+templates = Jinja2Templates(directory=TEMPLATES_DIR)
+
+# FIX 3: Add a numeric clamp filter so templates can use {{ value | clamp(0, 100) }}
+# The built-in Jinja2 `min` filter iterates a sequence — it crashes on floats.
+def _jinja_clamp(value, lo=0, hi=100):
+    try:
+        return max(lo, min(hi, float(value)))
+    except (TypeError, ValueError):
+        return lo
+
+templates.env.filters["clamp"] = _jinja_clamp
+
 # ── Config ────────────────────────────────────────────────────────────────────
 DATA_DIR    = os.environ.get("MIMIC_DATA_DIR",  os.path.join(PROJECT_ROOT, "data"))
 OUTPUT_DIR  = os.environ.get("ICU_OUTPUT_DIR",  os.path.join(PROJECT_ROOT, "output"))
@@ -77,7 +107,6 @@ PREDICTION_LABELS = [
     "sepsis_6h",     "sepsis_12h",     "sepsis_24h",
     "aki_stage1_24h","aki_stage2_24h", "aki_stage3_24h",
     "aki_stage1_48h","aki_stage2_48h", "aki_stage3_48h",
-    "hypotension_1h","hypotension_3h", "hypotension_6h",
     "vasopressor_6h","vasopressor_12h",
     "ventilation_6h","ventilation_12h","ventilation_24h",
     "los_short_24h", "los_long_72h",
@@ -88,7 +117,6 @@ TASK_GROUPS = {
     "Sepsis":         ["sepsis_6h",      "sepsis_12h",      "sepsis_24h"],
     "AKI":            ["aki_stage1_24h", "aki_stage2_24h",  "aki_stage3_24h",
                        "aki_stage1_48h", "aki_stage2_48h",  "aki_stage3_48h"],
-    "Hypotension":    ["hypotension_1h", "hypotension_3h",  "hypotension_6h"],
     "Vasopressor":    ["vasopressor_6h", "vasopressor_12h"],
     "Ventilation":    ["ventilation_6h", "ventilation_12h", "ventilation_24h"],
     "Length of Stay": ["los_short_24h",  "los_long_72h"],
@@ -423,6 +451,48 @@ def _fallback_labs(icustay_id: int) -> list:
 _model_registry: dict = {}
 _models_loaded = False
 
+_FALLBACK_MODEL_PRIORITY = ["xgboost", "lightgbm", "lstm", "transformer"]
+
+
+def _find_model_file(task: str, model_name: str) -> str:
+    """Resolve a model file path, checking several candidate locations."""
+    candidates = [
+        os.path.join(MODELS_DIR, f"{task}_{model_name}.pkl"),
+        os.path.join(MODELS_DIR, f"{task}_{model_name}.pth"),
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return ""
+
+
+def _load_single_model(task, model_name, labels, input_size, config_dict):
+    """Load a single model (DL or tree-based) and return a registry entry dict, or None."""
+    model_path = _find_model_file(task, model_name)
+    if not model_path:
+        return None
+
+    try:
+        if model_name in ("xgboost", "lightgbm"):
+            with open(model_path, "rb") as f:
+                model_obj = pickle.load(f)
+            return {"type": "xgboost", "model": model_obj, "labels": labels}
+        else:
+            import torch
+            from models import create_model
+            cfg = config_dict.copy()
+            cfg["input_size"] = input_size
+            cfg["num_tasks"]  = len(labels) if labels else 1
+            model_obj = create_model(model_name, cfg)
+            checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+            model_obj.load_state_dict(checkpoint["model_state_dict"])
+            model_obj.eval()
+            return {"type": "dl", "model": model_obj, "labels": labels, "input_size": input_size}
+    except Exception:
+        print(f"[WARN] Failed to load {model_name} for {task}:")
+        traceback.print_exc()
+        return None
+
 
 def _load_all_models():
     global _models_loaded
@@ -432,14 +502,6 @@ def _load_all_models():
     report_paths = glob.glob(os.path.join(OUTPUT_DIR, "*_report.json"))
     if not report_paths:
         print(f"[WARN] No *_report.json in {OUTPUT_DIR}. Using fallback predictions.")
-        _models_loaded = True
-        return
-
-    try:
-        import torch
-        from models import create_model
-    except ImportError as e:
-        print(f"[WARN] torch/models not importable: {e}. Using fallback predictions.")
         _models_loaded = True
         return
 
@@ -457,38 +519,57 @@ def _load_all_models():
             best_model = report.get("best_model")
             labels     = report.get("labels", [])
             input_size = report.get("input_size", 81)
-            comparison = report.get("comparison", {})
-            model_path = comparison.get(best_model, {}).get("model_path", "")
 
             if not task or not best_model:
                 continue
 
-            if not os.path.isabs(model_path):
-                model_path = os.path.join(PROJECT_ROOT, model_path)
-            if not os.path.exists(model_path):
-                model_path = os.path.join(MODELS_DIR, os.path.basename(model_path))
-            if not os.path.exists(model_path):
-                print(f"[WARN] Model not found: task={task} path={model_path}")
-                continue
+            # ── Try loading ensemble/stacked_ensemble pickle first ─────────
+            if best_model in ("ensemble", "stacked_ensemble", "weighted_ensemble"):
+                ens_path = _find_model_file(task, best_model)
+                if ens_path:
+                    with open(ens_path, "rb") as f:
+                        ens_data = pickle.load(f)
 
-            if best_model == "xgboost":
-                with open(model_path, "rb") as f:
-                    model_obj = pickle.load(f)
-                _model_registry[task] = {"type": "xgboost", "model": model_obj, "labels": labels}
-            else:
-                cfg = config_dict.copy()
-                cfg["input_size"] = input_size
-                cfg["num_tasks"]  = len(labels) if labels else 1
-                model_obj = create_model(best_model, cfg)
-                checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
-                model_obj.load_state_dict(checkpoint["model_state_dict"])
-                model_obj.eval()
-                _model_registry[task] = {
-                    "type": "dl", "model": model_obj,
-                    "labels": labels, "input_size": input_size,
-                }
+                    ens_type = ens_data.get("type", "")
+                    component_names = ens_data.get("component_model_names", [])
 
-            print(f"[INFO] Loaded {best_model} for task={task} ({len(labels)} labels)")
+                    # Load each component model
+                    components = {}
+                    for cname in component_names:
+                        entry = _load_single_model(task, cname, labels, input_size, config_dict)
+                        if entry:
+                            components[cname] = entry
+
+                    if len(components) >= 2:
+                        _model_registry[task] = {
+                            "type":       ens_type,
+                            "labels":     labels,
+                            "input_size": input_size,
+                            "components": components,
+                            "weights":    ens_data.get("weights", {}),
+                            "meta_learners": ens_data.get("meta_learners", []),
+                        }
+                        print(f"[INFO] Loaded {ens_type} for task={task} "
+                              f"({len(components)} components: {list(components.keys())})")
+                        continue
+                    else:
+                        print(f"[WARN] Ensemble for {task}: only {len(components)} components loaded, falling back")
+
+            # ── Fallback: load best individual model ───────────────────────
+            loaded = False
+            try_order = [best_model] + [m for m in _FALLBACK_MODEL_PRIORITY if m != best_model]
+            for mname in try_order:
+                entry = _load_single_model(task, mname, labels, input_size, config_dict)
+                if entry:
+                    _model_registry[task] = entry
+                    suffix = "" if mname == best_model else f" (fallback from {best_model})"
+                    print(f"[INFO] Loaded {mname} for task={task} ({len(labels)} labels){suffix}")
+                    loaded = True
+                    break
+
+            if not loaded:
+                print(f"[WARN] No loadable model for task={task}")
+
         except Exception:
             print(f"[WARN] Failed to load {report_path}:")
             traceback.print_exc()
@@ -524,6 +605,14 @@ def _extract_feature_sequence(icustay_id: int):
 
         from data_loader import MIMICDataLoader
         loader = cached("data_loader", lambda: MIMICDataLoader(DATA_DIR, CONFIG_PATH))
+
+        # Ensure dictionary tables are loaded (they're tiny ~200KB each)
+        if loader and loader.d_items is None:
+            try:
+                loader.load_dictionaries()
+            except Exception:
+                pass
+
         d_items    = loader.d_items    if loader and loader.d_items    is not None else pd.DataFrame()
         d_labitems = loader.d_labitems if loader and loader.d_labitems is not None else pd.DataFrame()
 
@@ -552,6 +641,63 @@ def _extract_feature_sequence(icustay_id: int):
         return None
 
 
+def _predict_single_component(info: dict, X, X_flat) -> dict:
+    """Run a single model component and return {label: prob} dict."""
+    labels = info["labels"]
+    mtype  = info["type"]
+    model  = info["model"]
+    preds  = {}
+
+    try:
+        if mtype == "xgboost":
+            # MultiTaskXGBoost wrapper has .models list
+            if hasattr(model, 'models'):
+                for i, m in enumerate(model.models):
+                    if m is None or i >= len(labels):
+                        continue
+                    expected = m.n_features_in_ if hasattr(m, 'n_features_in_') else X_flat.shape[1]
+                    x_in = X_flat
+                    if X_flat.shape[1] < expected:
+                        x_in = np.pad(X_flat, ((0, 0), (0, expected - X_flat.shape[1])))
+                    elif X_flat.shape[1] > expected:
+                        x_in = X_flat[:, :expected]
+                    prob = float(m.predict_proba(x_in)[0, 1])
+                    preds[labels[i]] = prob
+            else:
+                # Bare XGBClassifier (e.g. readmission — single task)
+                expected = model.n_features_in_ if hasattr(model, 'n_features_in_') else X_flat.shape[1]
+                x_in = X_flat
+                if X_flat.shape[1] < expected:
+                    x_in = np.pad(X_flat, ((0, 0), (0, expected - X_flat.shape[1])))
+                elif X_flat.shape[1] > expected:
+                    x_in = X_flat[:, :expected]
+                prob = float(model.predict_proba(x_in)[0, 1])
+                if labels:
+                    preds[labels[0]] = prob
+        else:
+            # DL model (LSTM / Transformer) — pad features if needed
+            import torch
+            expected_size = info.get("input_size", X.shape[-1])
+            x_in = X
+            if X.shape[-1] < expected_size:
+                pad_width = expected_size - X.shape[-1]
+                x_in = np.pad(X, ((0, 0), (0, 0), (0, pad_width)), mode='constant')
+            elif X.shape[-1] > expected_size:
+                x_in = X[:, :, :expected_size]
+
+            with torch.no_grad():
+                logits = model(torch.FloatTensor(x_in))
+                out = torch.sigmoid(logits).numpy()[0]
+            for i, lbl in enumerate(labels):
+                if i < len(out):
+                    preds[lbl] = float(out[i])
+    except Exception:
+        print(f"[WARN] Component prediction failed ({mtype}):")
+        traceback.print_exc()
+
+    return preds
+
+
 def _run_models(icustay_id: int) -> dict:
     _load_all_models()
     scores: dict = {}
@@ -564,27 +710,55 @@ def _run_models(icustay_id: int) -> dict:
         try:
             labels = info["labels"]
             mtype  = info["type"]
-            model  = info["model"]
 
             if X is None:
                 for lbl in labels:
                     scores[lbl] = 0.0
                 continue
 
-            if mtype == "xgboost":
-                X_flat = X.reshape(1, -1)
-                for i, m in enumerate(model.models):
-                    if m is None or i >= len(labels):
-                        continue
-                    prob = float(m.predict_proba(X_flat)[0, 1])
-                    scores[labels[i]] = round(prob, 4)
+            X_flat = X.reshape(1, -1)
+
+            # ── Ensemble / Stacked Ensemble ──────────────────────────────
+            if mtype in ("weighted_ensemble", "stacked_ensemble"):
+                components  = info["components"]
+                weights_map = info.get("weights", {})
+                meta_lrs    = info.get("meta_learners", [])
+
+                # Run each component model
+                comp_preds = {}  # {model_name: {label: prob}}
+                for cname, cinfo in components.items():
+                    comp_preds[cname] = _predict_single_component(cinfo, X, X_flat)
+
+                comp_names = list(comp_preds.keys())
+
+                if mtype == "weighted_ensemble":
+                    # Weighted average using AUROC² weights
+                    raw_w = np.array([weights_map.get(n, 1.0) for n in comp_names])
+                    w = raw_w / raw_w.sum()
+                    for lbl in labels:
+                        vals = [comp_preds[n].get(lbl, 0.0) for n in comp_names]
+                        scores[lbl] = round(float(np.average(vals, weights=w)), 4)
+
+                elif mtype == "stacked_ensemble":
+                    # Use LR meta-learners per label
+                    for i, lbl in enumerate(labels):
+                        vals = [comp_preds[n].get(lbl, 0.0) for n in comp_names]
+                        if i < len(meta_lrs) and meta_lrs[i] is not None:
+                            meta_X = np.array(vals).reshape(1, -1)
+                            scores[lbl] = round(float(
+                                meta_lrs[i].predict_proba(meta_X)[0, 1]
+                            ), 4)
+                        else:
+                            # Fallback to simple mean if no meta-learner
+                            scores[lbl] = round(float(np.mean(vals)), 4)
+
+            # ── Single model (XGBoost / LightGBM / DL) ──────────────────
             else:
-                import torch
-                with torch.no_grad():
-                    out = model(torch.FloatTensor(X)).numpy()[0]
-                for i, lbl in enumerate(labels):
-                    if i < len(out):
-                        scores[lbl] = round(float(out[i]), 4)
+                scores.update({
+                    k: round(v, 4)
+                    for k, v in _predict_single_component(info, X, X_flat).items()
+                })
+
         except Exception:
             print(f"[WARN] Prediction failed for task={task}:")
             traceback.print_exc()
@@ -616,9 +790,9 @@ def _get_predictions(icustay_id: int) -> dict:
 
     composite = round(
         scores.get("mortality_24h",  0) * 0.30 +
-        scores.get("sepsis_24h",     0) * 0.20 +
+        scores.get("sepsis_24h",     0) * 0.25 +
         scores.get("aki_stage1_24h", 0) * 0.15 +
-        scores.get("hypotension_6h", 0) * 0.20 +
+        scores.get("vasopressor_12h",0) * 0.15 +
         scores.get("ventilation_24h",0) * 0.15,
         4,
     )
@@ -664,26 +838,51 @@ def _get_shap(icustay_id: int) -> list:
         rp = ReadmissionPredictor(CONFIG_PATH)
         from data_loader import MIMICDataLoader
         loader = cached("data_loader", lambda: MIMICDataLoader(DATA_DIR, CONFIG_PATH))
-        ce = cached("chartevents", _load_chartevents) or pd.DataFrame()
-        le = cached("labevents",   _load_labevents)   or pd.DataFrame()
+
+        ce = cached("chartevents", _load_chartevents)
+        ce = ce if ce is not None else pd.DataFrame()
+        le = cached("labevents",   _load_labevents)
+        le = le if le is not None else pd.DataFrame()
+
+        # Load diagnoses/prescriptions on demand (small tables)
+        if loader and loader.diagnoses is None:
+            try:
+                loader.load_diagnoses()
+            except Exception:
+                pass
+        if loader and loader.prescriptions is None:
+            try:
+                loader.load_prescriptions()
+            except Exception:
+                pass
+
         diag = loader.diagnoses     if loader and loader.diagnoses     is not None else pd.DataFrame()
         prx  = loader.prescriptions if loader and loader.prescriptions is not None else pd.DataFrame()
 
+        # FIX 1: outputevents is not separately cached in app.py.
+        # Passing cached("labevents", ...) here caused "DataFrame is ambiguous"
+        # because ReadmissionPredictor checks `if outputevents is not None`
+        # on a DataFrame, which raises. Pass None — the predictor handles it safely.
         feat_df = rp.extract_discharge_features(
             stay_df, ce, le, diag, prx,
             services=getattr(loader, "services", None),
-            outputevents=cached("labevents", _load_labevents),
+            outputevents=None,
         )
 
         if len(feat_df) == 0 or not rp.feature_names:
             raise ValueError("No discharge features extracted")
 
+        # Ensure numpy array — never pass a DataFrame to shap_values()
         X = feat_df[rp.feature_names].fillna(0).values
         explainer   = shap_lib.TreeExplainer(readm_model)
         shap_values = explainer.shap_values(X)
         if isinstance(shap_values, list):
             shap_values = shap_values[1]
-        abs_vals = np.abs(shap_values[0])
+
+        # shap_values may be 2-D [n_samples, n_features] if feat_df has >1 row
+        # (stay_df is filtered to one icustay_id so usually 1 row, but be safe)
+        sv = shap_values[0] if shap_values.ndim == 2 else shap_values
+        abs_vals = np.abs(sv)
 
         top_idx = np.argsort(abs_vals)[::-1][:8]
         return [
@@ -736,14 +935,376 @@ def _row_to_dict(row: pd.Series) -> dict:
 # SECTION 6 — Routes
 # ═════════════════════════════════════════════════════════════════════════════
 
-# ── Dashboard (serves the HTML frontend) ──────────────────────────────────────
+# ── SSR Pages (Jinja2 Templates) ──────────────────────────────────────────────
+
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
-async def dashboard():
-    html_path = os.path.join(PROJECT_ROOT, "smart_icu_dashboard.html")
-    if os.path.exists(html_path):
-        with open(html_path, "r", encoding="utf-8") as f:
-            return HTMLResponse(content=f.read())
-    return HTMLResponse("<h1>Dashboard not found</h1><p>Place smart_icu_dashboard.html in project root.</p>")
+async def page_overview(request: Request):
+    """Overview dashboard."""
+    df = cached("patients", _load_patients)
+    stats_data = {}
+    if df is not None:
+        stats_data = {
+            "total_stays":    int(len(df)),
+            "total_patients": int(df["subject_id"].nunique()),
+            "mean_age":       round(float(df["age"].mean()), 1),
+            "mean_los_hours": round(float(df["los_hours"].dropna().mean()), 1),
+            "risk_dist":      {},
+        }
+        # Quick risk sample (small for speed)
+        sample = df.sample(min(50, len(df)), random_state=42)
+        risk_counts = {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
+        for _, r in sample.iterrows():
+            p = _get_predictions(int(r["icustay_id"]))
+            risk_counts[p["risk_level"]] += 1
+        scale = len(df) / max(len(sample), 1)
+        stats_data["risk_dist"] = {k: int(v * scale) for k, v in risk_counts.items()}
+
+    return templates.TemplateResponse("index.html", {
+        "request": request,
+        "active_page": "overview",
+        "stats": stats_data,
+        "models": list(_model_registry.keys()),
+    })
+
+
+@app.get("/patients", response_class=HTMLResponse, include_in_schema=False)
+async def page_patients(request: Request, q: str = "", risk: str = "", page: int = 1):
+    """Patient browser page."""
+    per_page = 20
+    df = cached("patients", _load_patients)
+    if df is None:
+        return templates.TemplateResponse("patients.html", {
+            "request": request, "active_page": "patients",
+            "patients": [], "total": 0, "page": 1, "pages": 1,
+            "q": q, "risk": risk,
+        })
+
+    filtered = df.copy()
+    q_lower = q.strip().lower()
+    if q_lower:
+        mask = (
+            filtered["subject_id"].astype(str).str.contains(q_lower, na=False) |
+            filtered["icustay_id"].astype(str).str.contains(q_lower, na=False) |
+            filtered["diagnosis"].fillna("").str.lower().str.contains(q_lower) |
+            filtered["first_careunit"].fillna("").str.lower().str.contains(q_lower)
+        )
+        filtered = filtered[mask]
+
+    total = len(filtered)
+    pages_total = max(1, math.ceil(total / per_page))
+    page = max(1, min(page, pages_total))
+    df_page = filtered.iloc[(page - 1) * per_page : page * per_page]
+
+    patients_list = []
+    for _, row in df_page.iterrows():
+        p = _row_to_dict(row)
+        pred = _get_predictions(int(row["icustay_id"]))
+        p["risk_level"] = pred["risk_level"]
+        p["composite_score"] = pred["composite_score"]
+        patients_list.append(p)
+
+    if risk:
+        patients_list = [p for p in patients_list if p["risk_level"] == risk.upper()]
+
+    return templates.TemplateResponse("patients.html", {
+        "request": request, "active_page": "patients",
+        "patients": patients_list, "total": total,
+        "page": page, "pages": pages_total,
+        "q": q, "risk": risk,
+    })
+
+
+@app.get("/patients/{icustay_id}", response_class=HTMLResponse, include_in_schema=False)
+async def page_patient_detail(request: Request, icustay_id: int):
+    """Single patient detail page."""
+    df = cached("patients", _load_patients)
+    if df is None:
+        raise HTTPException(503, "data unavailable")
+    row = df[df["icustay_id"] == icustay_id]
+    if len(row) == 0:
+        raise HTTPException(404, "Patient not found")
+
+    patient_data = _row_to_dict(row.iloc[0])
+    pred = _get_predictions(icustay_id)
+
+    return templates.TemplateResponse("patient_detail.html", {
+        "request": request, "active_page": "patients",
+        "patient": patient_data, "pred": pred,
+    })
+
+
+# ── Validation Demo ───────────────────────────────────────────────────────────
+_validation_cache: dict = {}
+
+
+def _load_validation_data():
+    """Load feature cache and split into test set (last 20% by temporal order)."""
+    if "loaded" in _validation_cache:
+        return _validation_cache
+
+    X_path = os.path.join(OUTPUT_DIR, "feature_cache_X.npy")
+    y_path = os.path.join(OUTPUT_DIR, "feature_cache_y.npy")
+    meta_path = os.path.join(OUTPUT_DIR, "feature_cache_meta.pkl")
+
+    if not all(os.path.exists(p) for p in [X_path, y_path, meta_path]):
+        return None
+
+    try:
+        print("[VALIDATION] Loading feature cache (this may take a moment)...")
+        X = np.load(X_path, mmap_mode='r')  # memory-mapped for speed
+        y = np.load(y_path)
+        with open(meta_path, "rb") as f:
+            meta = pickle.load(f)
+
+        n_total = len(X)
+        n_test_start = int(n_total * 0.8)  # last 20% = test split
+
+        # Get label names from meta
+        label_names = meta.get("label_names", PREDICTION_LABELS)
+        icustay_ids = meta.get("icustay_ids", [None] * n_total)
+        subject_ids = meta.get("subject_ids", [None] * n_total)
+
+        _validation_cache.update({
+            "X": X,
+            "y": y,
+            "meta": meta,
+            "label_names": label_names,
+            "n_total": n_total,
+            "n_test_start": n_test_start,
+            "n_test": n_total - n_test_start,
+            "icustay_ids": icustay_ids,
+            "subject_ids": subject_ids,
+            "loaded": True,
+        })
+        print(f"[VALIDATION] Loaded: {n_total} total, {n_total - n_test_start} test samples, {len(label_names)} labels")
+        return _validation_cache
+    except Exception as e:
+        print(f"[VALIDATION] Failed to load: {e}")
+        traceback.print_exc()
+        return None
+
+
+def _predict_test_sample(idx: int, vdata: dict) -> dict:
+    """Run model prediction on a single test sample and compare with ground truth."""
+    X = vdata["X"]
+    y = vdata["y"]
+    label_names = vdata["label_names"]
+    abs_idx = vdata["n_test_start"] + idx
+
+    if abs_idx >= vdata["n_total"]:
+        return None
+
+    # Ground truth
+    y_true = y[abs_idx]
+
+    # Get feature sequence for this sample
+    X_sample = np.array(X[abs_idx:abs_idx+1], dtype=np.float32)  # [1, seq_len, features]
+
+    # Run predictions through loaded models
+    _load_all_models()
+    predictions = {}
+
+    for task, info in _model_registry.items():
+        try:
+            labels = info["labels"]
+            mtype  = info["type"]
+
+            X_flat = X_sample.reshape(1, -1)
+
+            # ── Ensemble / Stacked Ensemble ──────────────────────────
+            if mtype in ("weighted_ensemble", "stacked_ensemble"):
+                components  = info.get("components", {})
+                weights_map = info.get("weights", {})
+                meta_lrs    = info.get("meta_learners", [])
+
+                comp_preds = {}
+                for cname, cinfo in components.items():
+                    comp_preds[cname] = _predict_single_component(cinfo, X_sample, X_flat)
+
+                comp_names = list(comp_preds.keys())
+
+                if mtype == "weighted_ensemble":
+                    raw_w = np.array([weights_map.get(n, 1.0) for n in comp_names])
+                    w = raw_w / raw_w.sum()
+                    for lbl in labels:
+                        vals = [comp_preds[n].get(lbl, 0.0) for n in comp_names]
+                        predictions[lbl] = round(float(np.average(vals, weights=w)), 4)
+
+                elif mtype == "stacked_ensemble":
+                    for i, lbl in enumerate(labels):
+                        vals = [comp_preds[n].get(lbl, 0.0) for n in comp_names]
+                        if i < len(meta_lrs) and meta_lrs[i] is not None:
+                            meta_X = np.array(vals).reshape(1, -1)
+                            predictions[lbl] = round(float(
+                                meta_lrs[i].predict_proba(meta_X)[0, 1]
+                            ), 4)
+                        else:
+                            predictions[lbl] = round(float(np.mean(vals)), 4)
+
+            # ── Single model (XGBoost / LightGBM / DL) ──────────────
+            else:
+                preds = _predict_single_component(info, X_sample, X_flat)
+                predictions.update({k: round(v, 4) for k, v in preds.items()})
+
+        except Exception:
+            traceback.print_exc()
+
+    # Build results per label
+    results = []
+    correct = 0
+    total_labels = min(len(label_names), len(y_true))
+
+    for i in range(total_labels):
+        lbl = label_names[i]
+        gt = int(y_true[i]) if not np.isnan(y_true[i]) else 0
+        prob = predictions.get(lbl, 0.0)
+        pred_binary = 1 if prob >= 0.5 else 0
+        match = pred_binary == gt
+        if match:
+            correct += 1
+        results.append({
+            "label": lbl,
+            "prob": round(prob, 4),
+            "pred": pred_binary,
+            "true": gt,
+            "match": match,
+        })
+
+    icustay_id = None
+    subject_id = None
+    if vdata["icustay_ids"] and abs_idx < len(vdata["icustay_ids"]):
+        icustay_id = vdata["icustay_ids"][abs_idx]
+    if vdata["subject_ids"] and abs_idx < len(vdata["subject_ids"]):
+        subject_id = vdata["subject_ids"][abs_idx]
+
+    return {
+        "index": idx,
+        "icustay_id": icustay_id,
+        "subject_id": subject_id,
+        "results": results,
+        "correct": correct,
+        "total": total_labels,
+        "accuracy": correct / max(total_labels, 1),
+    }
+
+
+def _compute_validation_summary(vdata: dict) -> dict:
+    """Compute aggregate metrics over a sample of the test set."""
+    from sklearn.metrics import roc_auc_score
+
+    n_test = vdata["n_test"]
+    label_names = vdata["label_names"]
+    y = vdata["y"]
+    n_test_start = vdata["n_test_start"]
+    n_labels = min(len(label_names), y.shape[1] if len(y.shape) > 1 else 1)
+
+    # Sample up to 200 test patients for speed
+    sample_size = min(200, n_test)
+    rng = np.random.RandomState(42)
+    sample_indices = rng.choice(n_test, size=sample_size, replace=False)
+
+    all_preds = []
+    total_correct = 0
+    total_labels_counted = 0
+
+    for idx in sample_indices:
+        result = _predict_test_sample(int(idx), vdata)
+        if result:
+            all_preds.append(result)
+            total_correct += result["correct"]
+            total_labels_counted += result["total"]
+
+    avg_accuracy = total_correct / max(total_labels_counted, 1)
+
+    # Per-task AUROC
+    per_task_auroc = {}
+    if all_preds and n_labels > 0:
+        for i in range(n_labels):
+            lbl = label_names[i]
+            y_true_list = []
+            y_prob_list = []
+            for pred_result in all_preds:
+                for r in pred_result["results"]:
+                    if r["label"] == lbl:
+                        y_true_list.append(r["true"])
+                        y_prob_list.append(r["prob"])
+                        break
+            if len(set(y_true_list)) >= 2:
+                try:
+                    auroc = roc_auc_score(y_true_list, y_prob_list)
+                    per_task_auroc[lbl] = round(auroc, 4)
+                except Exception:
+                    pass
+
+    avg_auroc = np.mean(list(per_task_auroc.values())) if per_task_auroc else 0.0
+
+    return {
+        "n_test": n_test,
+        "n_labels": n_labels,
+        "n_models": len(_model_registry),
+        "source": "trained_models" if _model_registry else "no_models",
+        "avg_accuracy": avg_accuracy,
+        "avg_auroc": avg_auroc,
+        "per_task_auroc": per_task_auroc,
+        "sample_size": sample_size,
+    }
+
+
+@app.get("/validation", response_class=HTMLResponse, include_in_schema=False)
+async def page_validation(request: Request, page: int = 1, idx: int = -1):
+    """Validation demo page: pick test patient, predict, compare."""
+    vdata = _load_validation_data()
+    if vdata is None:
+        return templates.TemplateResponse("validation.html", {
+            "request": request, "active_page": "validation",
+            "error": "Feature cache not found. Run the training pipeline first (python main_pipeline.py --data_dir data).",
+        })
+
+    n_test = vdata["n_test"]
+    per_page = 15
+    pages_total = max(1, math.ceil(n_test / per_page))
+    page = max(1, min(page, pages_total))
+
+    # Build test patient list for this page
+    start = (page - 1) * per_page
+    end = min(start + per_page, n_test)
+    test_patients = []
+    for i in range(start, end):
+        abs_i = vdata["n_test_start"] + i
+        icustay_id = vdata["icustay_ids"][abs_i] if abs_i < len(vdata["icustay_ids"]) else None
+        subject_id = vdata["subject_ids"][abs_i] if abs_i < len(vdata["subject_ids"]) else None
+        test_patients.append({
+            "index": i,
+            "icustay_id": icustay_id,
+            "subject_id": subject_id,
+            "accuracy": None,  # computed only for selected
+        })
+
+    # If a patient is selected, predict
+    selected = None
+    if 0 <= idx < n_test:
+        selected = _predict_test_sample(idx, vdata)
+
+    # Summary (lightweight — don't compute full AUROC every page load)
+    _load_all_models()
+    summary = {
+        "n_test": n_test,
+        "n_labels": min(len(vdata["label_names"]), vdata["y"].shape[1] if len(vdata["y"].shape) > 1 else 1),
+        "n_models": len(_model_registry),
+        "source": "trained_models" if _model_registry else "no_models",
+        "avg_accuracy": selected["accuracy"] if selected else 0.0,
+        "avg_auroc": 0.0,
+        "per_task_auroc": {},
+    }
+
+    return templates.TemplateResponse("validation.html", {
+        "request": request, "active_page": "validation",
+        "summary": summary,
+        "test_patients": test_patients,
+        "selected": selected,
+        "page": page, "pages": pages_total,
+        "error": None,
+    })
 
 
 @app.get("/api/health")
@@ -857,7 +1418,6 @@ def _clinical_rule_scores(v: VitalsInput, l: LabsInput, m: MedicationsInput,
     scores["sepsis_24h"] = round(min(1.0, sepsis_base), 4)
 
     # ── AKI (KDIGO stages) ──────────────────────────────────────────────
-    # Baseline creatinine assumed ~1.0 for new patient
     cr_baseline = 1.0
     cr_ratio = l.creatinine / max(cr_baseline, 0.1)
     cr_increase = l.creatinine - cr_baseline
@@ -873,16 +1433,7 @@ def _clinical_rule_scores(v: VitalsInput, l: LabsInput, m: MedicationsInput,
     scores["aki_stage2_48h"] = round(min(1.0, aki2 * 1.15), 4)
     scores["aki_stage3_48h"] = round(min(1.0, aki3 * 1.15), 4)
 
-    # ── HYPOTENSION (MAP < 65) ──────────────────────────────────────────
-    hypo_base = 0.0
-    if v.meanbp < 55:      hypo_base = 0.90
-    elif v.meanbp < 60:    hypo_base = 0.70
-    elif v.meanbp < 65:    hypo_base = 0.50
-    elif v.meanbp < 70:    hypo_base = 0.20
 
-    scores["hypotension_1h"] = round(min(1.0, hypo_base), 4)
-    scores["hypotension_3h"] = round(min(1.0, hypo_base * 1.1), 4)
-    scores["hypotension_6h"] = round(min(1.0, hypo_base * 1.2), 4)
 
     # ── VASOPRESSOR ─────────────────────────────────────────────────────
     vaso_base = 0.0
@@ -909,8 +1460,8 @@ def _clinical_rule_scores(v: VitalsInput, l: LabsInput, m: MedicationsInput,
     scores["ventilation_24h"] = round(min(1.0, vent_base), 4)
 
     # ── LENGTH OF STAY ──────────────────────────────────────────────────
-    los_short = 0.0  # P(discharge < 24h)
-    los_long  = 0.0  # P(stay > 72h)
+    los_short = 0.0
+    los_long  = 0.0
     severity = (sirs / 4) * 0.3 + mort_base * 0.3 + sepsis_base * 0.2 + max(0, aki1) * 0.2
     if severity < 0.15:     los_short = 0.60
     elif severity < 0.30:   los_short = 0.30
@@ -936,24 +1487,19 @@ def _run_models_on_input(v: VitalsInput, l: LabsInput) -> dict:
     if not _model_registry:
         return {}
 
-    # Build a single-step feature vector from user input
-    # (same feature order as training: 8 vitals + derived + 7 labs)
     feat_vals = [
         v.heartrate, v.sysbp, v.diasbp, v.meanbp,
         v.resprate, v.tempc, v.spo2, v.glucose,
-        # Derived features (from feature_engineering.py)
-        v.heartrate / max(v.sysbp, 1),  # shock_index
-        v.sysbp - v.diasbp,              # pulse_pressure
-        v.sysbp * v.heartrate,           # rate_pressure_product
-        # Labs
+        v.heartrate / max(v.sysbp, 1),
+        v.sysbp - v.diasbp,
+        v.sysbp * v.heartrate,
         l.creatinine, l.lactate, l.wbc, l.hemoglobin,
         l.platelets, l.bicarbonate, l.chloride,
     ]
 
-    # Create a 24-step sequence by repeating (simulates stable patient)
     n_features = len(feat_vals)
-    seq = np.array([feat_vals] * 24, dtype=np.float32)  # [24, n_features]
-    X = seq[np.newaxis, :, :]                            # [1, 24, n_features]
+    seq = np.array([feat_vals] * 24, dtype=np.float32)
+    X = seq[np.newaxis, :, :]
 
     scores = {}
     for task, info in _model_registry.items():
@@ -962,15 +1508,11 @@ def _run_models_on_input(v: VitalsInput, l: LabsInput) -> dict:
             mtype  = info["type"]
             model  = info["model"]
 
-            # Pad/truncate features to match model input size
-            model_input_size = None
             if mtype == "xgboost":
-                # XGBoost expects flattened
                 X_flat = X.reshape(1, -1)
                 for i, m in enumerate(model.models):
                     if m is None or i >= len(labels):
                         continue
-                    # Pad if needed
                     expected = m.n_features_in_ if hasattr(m, 'n_features_in_') else X_flat.shape[1]
                     if X_flat.shape[1] < expected:
                         X_flat = np.pad(X_flat, ((0,0),(0, expected - X_flat.shape[1])))
@@ -980,13 +1522,11 @@ def _run_models_on_input(v: VitalsInput, l: LabsInput) -> dict:
                     scores[labels[i]] = round(prob, 4)
             else:
                 import torch
-                # Check model input size and pad/truncate
                 X_t = torch.FloatTensor(X)
                 try:
                     with torch.no_grad():
                         out = model(X_t).numpy()[0]
                 except RuntimeError:
-                    # Feature size mismatch — try to pad
                     if hasattr(model, 'lstm'):
                         expected = model.lstm.input_size
                     elif hasattr(model, 'input_proj'):
@@ -1013,25 +1553,15 @@ def _run_models_on_input(v: VitalsInput, l: LabsInput) -> dict:
 
 @app.post("/api/predict")
 async def predict_new_patient(patient: PatientInput):
-    """
-    Run all ICU risk predictions on a new patient's clinical data.
-
-    Returns composite risk score, per-category predictions, clinical alerts,
-    and clinical scores (SIRS, shock index, etc.)
-    """
     v = patient.vitals
     l = patient.labs
     m = patient.medications
     d = patient.demographics
     h = patient.history
 
-    # 1. Clinical-rule-based scoring (always runs)
     rule_scores, clinical_info = _clinical_rule_scores(v, l, m, d, h)
-
-    # 2. Trained model inference (if models exist)
     model_scores = _run_models_on_input(v, l)
 
-    # 3. Merge: prefer model scores, fall back to clinical rules
     final_scores = {}
     for lbl in PREDICTION_LABELS:
         if lbl in model_scores and model_scores[lbl] > 0:
@@ -1041,27 +1571,22 @@ async def predict_new_patient(patient: PatientInput):
 
     source = "trained_models" if model_scores else "clinical_rules"
 
-    # 4. Composite risk score
     composite = round(
         final_scores.get("mortality_24h",  0) * 0.30 +
-        final_scores.get("sepsis_24h",     0) * 0.20 +
+        final_scores.get("sepsis_24h",     0) * 0.25 +
         final_scores.get("aki_stage1_24h", 0) * 0.15 +
-        final_scores.get("hypotension_6h", 0) * 0.20 +
+        final_scores.get("vasopressor_12h",0) * 0.15 +
         final_scores.get("ventilation_24h",0) * 0.15,
         4,
     )
     risk = "HIGH" if composite > 0.6 else "MEDIUM" if composite > 0.3 else "LOW"
 
-    # 5. Generate clinical alerts
     alerts = []
 
-    # Mortality
     if final_scores.get("mortality_24h", 0) > 0.5:
         alerts.append({"type": "critical", "category": "Mortality",
                        "message": f"High 24h mortality risk ({final_scores['mortality_24h']:.0%})",
                        "score": final_scores["mortality_24h"]})
-
-    # Sepsis
     if clinical_info["sirs"] >= 3:
         alerts.append({"type": "critical", "category": "Sepsis",
                        "message": f"SIRS score {clinical_info['sirs']}/4 — high sepsis risk",
@@ -1070,8 +1595,6 @@ async def predict_new_patient(patient: PatientInput):
         alerts.append({"type": "warning", "category": "Sepsis",
                        "message": f"SIRS {clinical_info['sirs']}/4 + antibiotics — monitor for sepsis",
                        "score": final_scores.get("sepsis_24h", 0)})
-
-    # AKI
     if l.creatinine > 2.0:
         alerts.append({"type": "critical", "category": "AKI",
                        "message": f"Creatinine {l.creatinine} mg/dL (elevated) — AKI risk",
@@ -1080,24 +1603,18 @@ async def predict_new_patient(patient: PatientInput):
         alerts.append({"type": "warning", "category": "AKI",
                        "message": f"Creatinine {l.creatinine} mg/dL — monitor kidney function",
                        "score": final_scores.get("aki_stage1_24h", 0)})
-
-    # Hypotension
     if v.meanbp < 65:
-        alerts.append({"type": "critical", "category": "Hypotension",
-                       "message": f"MAP {v.meanbp:.0f} mmHg < 65 — active hypotension",
-                       "score": final_scores.get("hypotension_1h", 0)})
+        alerts.append({"type": "critical", "category": "Vasopressor",
+                       "message": f"MAP {v.meanbp:.0f} mmHg < 65 — low blood pressure, vasopressor may be needed",
+                       "score": final_scores.get("vasopressor_6h", 0)})
     elif v.meanbp < 70:
-        alerts.append({"type": "warning", "category": "Hypotension",
-                       "message": f"MAP {v.meanbp:.0f} mmHg — borderline hypotension",
-                       "score": final_scores.get("hypotension_3h", 0)})
-
-    # Vasopressor
+        alerts.append({"type": "warning", "category": "Vasopressor",
+                       "message": f"MAP {v.meanbp:.0f} mmHg — borderline low, monitor closely",
+                       "score": final_scores.get("vasopressor_6h", 0)})
     if m.vasopressors:
         alerts.append({"type": "warning", "category": "Vasopressor",
                        "message": "Patient currently on vasopressors",
                        "score": final_scores.get("vasopressor_12h", 0)})
-
-    # Ventilation
     if v.spo2 < 90:
         alerts.append({"type": "critical", "category": "Ventilation",
                        "message": f"SpO₂ {v.spo2}% — severe hypoxemia, consider ventilation",
@@ -1106,14 +1623,10 @@ async def predict_new_patient(patient: PatientInput):
         alerts.append({"type": "warning", "category": "Ventilation",
                        "message": f"SpO₂ {v.spo2}% + RR {v.resprate} — respiratory distress",
                        "score": final_scores.get("ventilation_12h", 0)})
-
-    # Shock
     if clinical_info["shock_index"] > 1.0:
         alerts.append({"type": "warning", "category": "Hemodynamic",
                        "message": f"Shock index {clinical_info['shock_index']} (>1.0) — hemodynamic instability",
                        "score": composite})
-
-    # Lactate
     if l.lactate > 4.0:
         alerts.append({"type": "critical", "category": "Metabolic",
                        "message": f"Lactate {l.lactate} mmol/L — severe tissue hypoperfusion",
@@ -1123,10 +1636,8 @@ async def predict_new_patient(patient: PatientInput):
                        "message": f"Lactate {l.lactate} mmol/L — elevated, monitor perfusion",
                        "score": composite})
 
-    # Sort alerts by severity
     alerts.sort(key=lambda a: (0 if a["type"] == "critical" else 1, -a["score"]))
 
-    # 6. Build response
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     return {
         "patient_id":      f"NEW_{ts}",
@@ -1153,7 +1664,6 @@ _stats_cache = {"data": None, "ts": 0}
 async def stats():
     import time
     now = time.time()
-    # Cache stats for 60 seconds to avoid recalculating predictions
     if _stats_cache["data"] and (now - _stats_cache["ts"]) < 60:
         return _stats_cache["data"]
 
@@ -1161,7 +1671,6 @@ async def stats():
     if df is None:
         raise HTTPException(503, "data unavailable")
 
-    # Smaller sample = faster response (200 instead of 500)
     sample = df.sample(min(200, len(df)), random_state=42)
     risk_counts = {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
     for _, r in sample.iterrows():
@@ -1445,7 +1954,6 @@ async def lifespan(app):
     print(f"  Dashboard : http://localhost:8000")
     print("=" * 60)
 
-    # Fast loads — patients + models (<10 sec)
     _set_boot_status("loading_patients")
     print("[BOOT] Loading patient demographics…")
     cached("patients", _load_patients)
@@ -1456,7 +1964,6 @@ async def lifespan(app):
     _load_all_models()
     _set_boot_status("models_loaded")
 
-    # Heavy loads in background thread (CHARTEVENTS = 33 GB)
     print("[BOOT] Server starting — heavy data loading in background thread…")
     bg_thread = threading.Thread(target=_background_loader, daemon=True)
     bg_thread.start()
@@ -1465,7 +1972,6 @@ async def lifespan(app):
     yield
     print("[SHUTDOWN] Goodbye.")
 
-# Attach lifespan to app
 app.router.lifespan_context = lifespan
 
 
