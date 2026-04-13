@@ -1704,7 +1704,7 @@
                         {labels.map(label => {
                             const s = scores?.[label] ?? 0;
                             const color = scoreColor(s);
-                            const short = label.replace(/aki_stage/, "S").replace(/hypotension/, "hypo").replace(/vasopressor/, "vaso").replace(/ventilation/, "vent").replace(/mortality/, "mort").replace(/sepsis/, "seps").replace(/los_/, "los-");
+                            const short = label.replace(/aki_stage/, "S").replace(/vasopressor/, "vaso").replace(/ventilation/, "vent").replace(/mortality/, "mort").replace(/sepsis/, "seps").replace(/los_/, "los-");
                             return (
                                 <div className="pred-item" key={label} style={{ borderColor: s > 0.65 ? "rgba(255,59,92,.3)" : undefined }}>
                                     <div className="pred-item-label">{short}</div>
@@ -1746,7 +1746,6 @@
                 "Mortality": ["mortality_6h", "mortality_12h", "mortality_24h"],
                 "Sepsis": ["sepsis_6h", "sepsis_12h", "sepsis_24h"],
                 "AKI": ["aki_stage1_24h", "aki_stage2_24h", "aki_stage3_24h", "aki_stage1_48h", "aki_stage2_48h", "aki_stage3_48h"],
-                "Hypotension": ["hypotension_1h", "hypotension_3h", "hypotension_6h"],
                 "Vasopressor": ["vasopressor_6h", "vasopressor_12h"],
                 "Ventilation": ["ventilation_6h", "ventilation_12h", "ventilation_24h"],
                 "Length of Stay": ["los_short_24h", "los_long_72h"],
@@ -1899,7 +1898,7 @@
                     {/* Prediction scores */}
                     <div className="card section">
                         <div className="card-header">
-                            <span className="card-title">All 22 Prediction Scores</span>
+                            <span className="card-title">All 19 Prediction Scores</span>
                             <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--text3)" }}>
                                 UPDATED {preds?.updated_at ? new Date(preds.updated_at).toLocaleTimeString() : "—"}
                             </span>
