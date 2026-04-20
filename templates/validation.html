@@ -47,7 +47,7 @@
 
 {% block content %}
 <div class="page-header fade-up">
-  <div class="page-eyebrow">🎯 Model Validation &middot; Test Split</div>
+  <div class="page-eyebrow">Model Validation &middot; Test Split</div>
   <h1 class="page-title">Validate Predictions</h1>
   <p class="page-sub">Pick a patient from the test split, run trained models, and compare predictions against ground truth labels.</p>
 </div>
@@ -101,12 +101,22 @@
       <span class="card-badge">Page {{ page }} / {{ pages }}</span>
     </div>
     <div class="card-body" style="padding:0;">
+      {% if not summary.has_patient_ids %}
+      <div style="padding:10px 16px; background:var(--bg-card-2); border-bottom:1px solid var(--border); font-size:11px; color:var(--text-3); line-height:1.5;">
+        <strong style="color:var(--warning);">Note:</strong> Each row is a time-window sample from the test split, not a unique patient. The feature cache contains multiple overlapping sequences per ICU stay.
+      </div>
+      {% endif %}
       <table class="data-table">
         <thead>
           <tr>
             <th>#</th>
+            {% if summary.has_patient_ids %}
             <th>ICU Stay</th>
             <th>Subject</th>
+            {% else %}
+            <th>Sample</th>
+            <th>Timestamp</th>
+            {% endif %}
             <th>Accuracy</th>
             <th></th>
           </tr>
@@ -115,8 +125,13 @@
           {% for pt in test_patients %}
           <tr {% if selected and selected.index == pt.index %}style="background:var(--primary-bg);"{% endif %}>
             <td style="font-family:var(--ff-mono); color:var(--text-3);">{{ pt.index }}</td>
+            {% if summary.has_patient_ids %}
             <td style="font-family:var(--ff-mono); color:var(--primary); font-weight:600;">{{ pt.icustay_id or '—' }}</td>
             <td style="font-family:var(--ff-mono);">{{ pt.subject_id or '—' }}</td>
+            {% else %}
+            <td style="font-family:var(--ff-mono); color:var(--primary); font-weight:600;">S-{{ pt.index }}</td>
+            <td style="font-family:var(--ff-mono); font-size:11px; color:var(--text-2);">{{ pt.timestamp or '—' }}</td>
+            {% endif %}
             <td>
               {% if pt.accuracy is not none %}
               <span style="font-family:var(--ff-mono); font-size:12px; font-weight:600; color:{% if pt.accuracy >= 0.8 %}var(--success){% elif pt.accuracy >= 0.6 %}var(--warning){% else %}var(--danger){% endif %};">
@@ -161,7 +176,7 @@
     {% if selected %}
     <div class="card">
       <div class="card-head">
-        <span class="card-label">🔬 Predictions vs Ground Truth</span>
+        <span class="card-label"><span class="icon icon-sm" style="color:var(--accent);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.8 18.4L14 10.67V6.5l1.35-1.69c.26-.33.03-.81-.39-.81H9.04c-.42 0-.65.48-.39.81L10 6.5v4.17L4.2 18.4c-.49.66-.02 1.6.8 1.6h14c.82 0 1.29-.94.8-1.6z"/></svg></span> Predictions vs Ground Truth</span>
         <span class="card-badge">Sample #{{ selected.index }}</span>
       </div>
       <div class="card-body">
@@ -202,7 +217,7 @@
           </div>
           <span class="val-gt" style="color:{% if r.pred == 1 %}var(--warning){% else %}var(--success){% endif %};">{{ r.pred }}</span>
           <span class="val-gt" style="color:{% if r.true == 1 %}var(--danger){% else %}var(--success){% endif %};">{{ r.true }}</span>
-          <span class="match-icon">{% if r.match %}✅{% else %}❌{% endif %}</span>
+          <span class="match-icon">{% if r.match %}<svg viewBox="0 0 24 24" width="16" height="16" fill="var(--success)"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>{% else %}<svg viewBox="0 0 24 24" width="16" height="16" fill="var(--danger)"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41z"/></svg>{% endif %}</span>
         </div>
         {% endfor %}
       </div>
@@ -211,7 +226,7 @@
     <div class="card">
       <div class="card-body">
         <div class="empty-state">
-          <div class="empty-icon">🎯</div>
+          <div class="empty-icon" style="opacity:0.5;"><span class="icon icon-xl" style="color:var(--text-3);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg></span></div>
           <div class="empty-text">Select a test patient from the list<br/>to see prediction vs ground truth comparison.</div>
         </div>
       </div>
@@ -221,14 +236,17 @@
 
 </div>
 
-<!-- Per-Task AUROC -->
-{% if summary.per_task_auroc %}
+<!-- Per-Task AUROC (Lazy Load) -->
 <div class="card fade-up fade-up-3" style="margin-top:20px;">
   <div class="card-head">
-    <span class="card-label">📈 Per-Task AUROC on Test Set</span>
-    <span class="card-badge">{{ summary.per_task_auroc | length }} tasks</span>
+    <span class="card-label"><span class="icon icon-sm" style="color:var(--primary);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99l1.5 1.5z"/></svg></span> Per-Task AUROC on Test Set</span>
+    <button class="btn btn-primary" id="computeAurocBtn" style="padding:4px 14px; font-size:11px;">
+      <span class="icon icon-sm"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg></span>
+      Compute Full Metrics
+    </button>
   </div>
-  <div class="card-body">
+  <div class="card-body" id="aurocResults">
+    {% if summary.per_task_auroc %}
     {% for label, auroc in summary.per_task_auroc.items() %}
     <div class="bar-row">
       <span class="bar-label" style="font-family:var(--ff-mono); font-size:12px;">{{ label }}</span>
@@ -239,9 +257,63 @@
       <span class="bar-value" style="color:{{ acolor }};">{{ '%.3f' | format(auroc) }}</span>
     </div>
     {% endfor %}
+    {% else %}
+    <div style="text-align:center; padding:20px; color:var(--text-3); font-size:13px;">
+      Click "Compute Full Metrics" to calculate per-task AUROC across the entire test set.<br/>
+      <span style="font-size:11px;">This may take a few seconds depending on test set size.</span>
+    </div>
+    {% endif %}
   </div>
 </div>
-{% endif %}
 
 {% endif %}
 {% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  var btn = document.getElementById('computeAurocBtn');
+  if (!btn) return;
+  btn.addEventListener('click', function() {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="global-spinner" style="width:14px;height:14px;border-width:2px;"></span> Computing...';
+    fetch('/api/validation/auroc')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var container = document.getElementById('aurocResults');
+        if (data.error) {
+          container.innerHTML = '<div style="padding:12px; color:var(--danger); font-size:13px;">' + data.error + '</div>';
+          return;
+        }
+        var html = '';
+        var tasks = data.per_task_auroc || {};
+        Object.keys(tasks).forEach(function(label) {
+          var auroc = tasks[label];
+          var color = auroc >= 0.7 ? 'var(--success)' : auroc >= 0.5 ? 'var(--warning)' : 'var(--danger)';
+          html += '<div class="bar-row">'
+            + '<span class="bar-label" style="font-family:var(--ff-mono); font-size:12px;">' + label + '</span>'
+            + '<div class="bar-track"><div class="bar-fill" style="width:' + (auroc * 100) + '%; background:' + color + ';"></div></div>'
+            + '<span class="bar-value" style="color:' + color + ';">' + auroc.toFixed(3) + '</span>'
+            + '</div>';
+        });
+        if (data.avg_auroc !== undefined) {
+          html += '<div style="margin-top:12px; padding-top:12px; border-top:2px solid var(--primary-bg); display:flex; justify-content:space-between; align-items:center;">'
+            + '<span style="font-size:12px; font-weight:700; color:var(--primary); text-transform:uppercase; letter-spacing:0.06em;">Average AUROC</span>'
+            + '<span style="font-size:20px; font-weight:700; color:var(--primary); font-family:var(--ff-mono);">' + data.avg_auroc.toFixed(4) + '</span>'
+            + '</div>';
+        }
+        container.innerHTML = html;
+        btn.innerHTML = '✓ Computed';
+        btn.classList.remove('btn-primary');
+        if (window.showToast) showToast('AUROC computed for ' + Object.keys(tasks).length + ' tasks', 'success');
+      })
+      .catch(function(err) {
+        btn.disabled = false;
+        btn.innerHTML = 'Retry';
+        if (window.showToast) showToast('Failed to compute AUROC: ' + err.message, 'error');
+      });
+  });
+})();
+</script>
+{% endblock %}
+

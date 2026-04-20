@@ -959,11 +959,28 @@ async def page_overview(request: Request):
         scale = len(df) / max(len(sample), 1)
         stats_data["risk_dist"] = {k: int(v * scale) for k, v in risk_counts.items()}
 
+    # Load training report data for model performance summary
+    report_data = {}
+    report_paths = glob.glob(os.path.join(OUTPUT_DIR, "*_report.json"))
+    for rp in report_paths:
+        try:
+            with open(rp) as f:
+                rpt = json.load(f)
+            task_name = rpt.get("task", "")
+            if task_name:
+                report_data[task_name] = {
+                    "best_auroc": rpt.get("best_auroc", rpt.get("best_metric", 0.0)),
+                    "best_model": rpt.get("best_model", "unknown"),
+                }
+        except Exception:
+            pass
+
     return templates.TemplateResponse("index.html", {
         "request": request,
         "active_page": "overview",
         "stats": stats_data,
         "models": list(_model_registry.keys()),
+        "report_data": report_data if report_data else None,
     })
 
 
@@ -1033,6 +1050,87 @@ async def page_patient_detail(request: Request, icustay_id: int):
     })
 
 
+@app.get("/predict", response_class=HTMLResponse, include_in_schema=False)
+async def page_predict(request: Request):
+    """New patient prediction form page."""
+    return templates.TemplateResponse("predict.html", {
+        "request": request, "active_page": "predict",
+    })
+
+
+@app.get("/compare", response_class=HTMLResponse, include_in_schema=False)
+async def page_compare(request: Request):
+    """Patient comparison page."""
+    return templates.TemplateResponse("compare.html", {
+        "request": request, "active_page": "compare",
+    })
+
+
+@app.get("/api/validation/auroc")
+async def validation_auroc():
+    """Compute per-task AUROC on the test set (lazy, on-demand)."""
+    try:
+        vdata = _load_validation_data()
+        if vdata is None:
+            return {"error": "Validation data not available. Run training first."}
+
+        _load_all_models()
+        if not _model_registry:
+            return {"error": "No trained models loaded."}
+
+        from sklearn.metrics import roc_auc_score
+
+        y_true = vdata["y"]
+        X_test = vdata["X"]
+        label_names = vdata["label_names"]
+        n_test = len(X_test)
+
+        # Predict all test samples
+        y_pred = np.zeros_like(y_true, dtype=np.float32)
+        for i in range(n_test):
+            try:
+                result = _predict_test_sample(i, vdata)
+                if result and result.get("results"):
+                    for r in result["results"]:
+                        lbl_idx = label_names.index(r["label"]) if r["label"] in label_names else -1
+                        if lbl_idx >= 0:
+                            if len(y_pred.shape) > 1 and lbl_idx < y_pred.shape[1]:
+                                y_pred[i, lbl_idx] = r["prob"]
+                            elif len(y_pred.shape) == 1:
+                                y_pred[i] = r["prob"]
+            except Exception:
+                continue
+
+        per_task = {}
+        total_auroc = 0.0
+        valid_tasks = 0
+        n_labels = min(len(label_names), y_true.shape[1] if len(y_true.shape) > 1 else 1)
+
+        for j in range(n_labels):
+            lbl = label_names[j] if j < len(label_names) else f"label_{j}"
+            try:
+                yt = y_true[:, j] if len(y_true.shape) > 1 else y_true
+                yp = y_pred[:, j] if len(y_pred.shape) > 1 else y_pred
+                if len(np.unique(yt)) < 2:
+                    continue
+                auroc = float(roc_auc_score(yt, yp))
+                per_task[lbl] = round(auroc, 4)
+                total_auroc += auroc
+                valid_tasks += 1
+            except Exception:
+                continue
+
+        avg = round(total_auroc / max(valid_tasks, 1), 4)
+        return {
+            "per_task_auroc": per_task,
+            "avg_auroc": avg,
+            "n_test": n_test,
+            "n_tasks": valid_tasks,
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 # ── Validation Demo ───────────────────────────────────────────────────────────
 _validation_cache: dict = {}
 
@@ -1061,8 +1159,28 @@ def _load_validation_data():
 
         # Get label names from meta
         label_names = meta.get("label_names", PREDICTION_LABELS)
-        icustay_ids = meta.get("icustay_ids", [None] * n_total)
-        subject_ids = meta.get("subject_ids", [None] * n_total)
+        # Get ICU stay and subject IDs — with fallback
+        icustay_ids = meta.get("icustay_ids", [])
+        subject_ids = meta.get("subject_ids", [])
+
+        # If icustay_ids is empty or all None, try to cross-reference with patients DF
+        has_valid_ids = icustay_ids and any(x is not None for x in icustay_ids[:min(20, len(icustay_ids))])
+        if not has_valid_ids:
+            print("[VALIDATION] icustay_ids missing from meta — attempting fallback from patients DF")
+            patients_df = cached("patients", _load_patients)
+            if patients_df is not None and len(patients_df) > 0:
+                available = min(len(patients_df), n_total)
+                icustay_ids = patients_df["icustay_id"].iloc[:available].tolist()
+                subject_ids = patients_df["subject_id"].iloc[:available].tolist()
+                # Pad with None if patients_df has fewer rows than feature cache
+                if available < n_total:
+                    icustay_ids.extend([None] * (n_total - available))
+                    subject_ids.extend([None] * (n_total - available))
+                print(f"[VALIDATION] Recovered {available} icustay_ids from patients DF (total needed: {n_total})")
+            else:
+                # Last resort: generate sequential placeholder IDs
+                icustay_ids = [None] * n_total
+                subject_ids = [None] * n_total
 
         _validation_cache.update({
             "X": X,
@@ -1074,6 +1192,7 @@ def _load_validation_data():
             "n_test": n_total - n_test_start,
             "icustay_ids": icustay_ids,
             "subject_ids": subject_ids,
+            "timestamps": meta.get("timestamps", []),
             "loaded": True,
         })
         print(f"[VALIDATION] Loaded: {n_total} total, {n_total - n_test_start} test samples, {len(label_names)} labels")
@@ -1265,36 +1384,68 @@ async def page_validation(request: Request, page: int = 1, idx: int = -1):
     pages_total = max(1, math.ceil(n_test / per_page))
     page = max(1, min(page, pages_total))
 
-    # Build test patient list for this page
+    # Ensure models are loaded before computing predictions
+    _load_all_models()
+
+    # Build test patient list for this page — compute accuracy for each
     start = (page - 1) * per_page
     end = min(start + per_page, n_test)
     test_patients = []
+    page_accuracy_sum = 0.0
+    page_accuracy_count = 0
+
+    # Get timestamps for fallback identification
+    timestamps = vdata.get("timestamps", [])
+
     for i in range(start, end):
         abs_i = vdata["n_test_start"] + i
         icustay_id = vdata["icustay_ids"][abs_i] if abs_i < len(vdata["icustay_ids"]) else None
         subject_id = vdata["subject_ids"][abs_i] if abs_i < len(vdata["subject_ids"]) else None
+
+        # Use timestamp as fallback identifier when ICU Stay ID is missing
+        ts_label = None
+        if abs_i < len(timestamps):
+            try:
+                ts_label = str(timestamps[abs_i])[:16]  # "2154-02-08 12:00"
+            except Exception:
+                pass
+
+        # Compute accuracy for this sample (lightweight — just one sample)
+        sample_acc = None
+        try:
+            result = _predict_test_sample(i, vdata)
+            if result and result.get("total", 0) > 0:
+                sample_acc = result["accuracy"]
+                page_accuracy_sum += sample_acc
+                page_accuracy_count += 1
+        except Exception:
+            pass
+
         test_patients.append({
             "index": i,
             "icustay_id": icustay_id,
             "subject_id": subject_id,
-            "accuracy": None,  # computed only for selected
+            "timestamp": ts_label,
+            "accuracy": sample_acc,
         })
 
-    # If a patient is selected, predict
+    # If a patient is selected, predict (may already have been computed above)
     selected = None
     if 0 <= idx < n_test:
         selected = _predict_test_sample(idx, vdata)
 
+    avg_page_acc = page_accuracy_sum / max(page_accuracy_count, 1)
+
     # Summary (lightweight — don't compute full AUROC every page load)
-    _load_all_models()
     summary = {
         "n_test": n_test,
         "n_labels": min(len(vdata["label_names"]), vdata["y"].shape[1] if len(vdata["y"].shape) > 1 else 1),
         "n_models": len(_model_registry),
         "source": "trained_models" if _model_registry else "no_models",
-        "avg_accuracy": selected["accuracy"] if selected else 0.0,
+        "avg_accuracy": avg_page_acc,
         "avg_auroc": 0.0,
         "per_task_auroc": {},
+        "has_patient_ids": any(p["icustay_id"] is not None for p in test_patients),
     }
 
     return templates.TemplateResponse("validation.html", {

@@ -29,16 +29,62 @@
       margin-bottom: 10px; padding-bottom: 6px;
       border-bottom: 2px solid var(--primary-bg);
     }
+    /* Sparklines */
+    .sparkline-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .sparkline-item {
+      background: var(--bg-card-2); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); padding: 12px; text-align: center;
+      transition: transform var(--transition), box-shadow var(--transition);
+    }
+    .sparkline-item:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+    .sparkline-label { font-size: 10px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+    .sparkline-value { font-size: 18px; font-weight: 700; font-family: var(--ff-mono); margin-bottom: 6px; }
+    .sparkline-svg { width: 100%; height: 32px; }
+    /* Vitals chart */
+    .chart-container { position: relative; width: 100%; height: 250px; }
+    .chart-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+    .chart-tab {
+      padding: 6px 14px; font-size: 12px; font-weight: 600; border: 1px solid var(--border);
+      border-radius: var(--radius-sm); background: var(--bg-card-2); color: var(--text-2);
+      cursor: pointer; transition: all var(--transition);
+    }
+    .chart-tab.active { background: var(--primary-bg); color: var(--primary); border-color: var(--primary-border); }
+    .chart-tooltip {
+      position: absolute; pointer-events: none; font-size: 11px;
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 6px; padding: 6px 10px; box-shadow: var(--shadow-lg);
+      font-family: var(--ff-mono); color: var(--text-1); z-index: 10;
+      display: none;
+    }
+    .action-bar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+    @media (max-width: 768px) {
+      .sparkline-grid { grid-template-columns: 1fr 1fr; }
+    }
 {% endblock %}
 
 {% block content %}
 <!-- Breadcrumb -->
 <div class="page-header fade-up">
-  <div class="page-eyebrow">
-    <a href="/patients" style="color:var(--text-3); text-decoration:none;">&larr; All Patients</a>
-    &middot; ICU Stay #{{ patient.icustay_id }}
-  </div>
+  <nav aria-label="breadcrumb" class="breadcrumb">
+    <a href="/">Overview</a>
+    <span class="breadcrumb-sep">›</span>
+    <a href="/patients">Patients</a>
+    <span class="breadcrumb-sep">›</span>
+    <span class="breadcrumb-current">ICU Stay #{{ patient.icustay_id }}</span>
+  </nav>
   <h1 class="page-title">Patient #{{ patient.icustay_id }}</h1>
+</div>
+
+<!-- Action Bar -->
+<div class="action-bar fade-up fade-up-1">
+  <button class="btn btn-primary" id="exportCsvBtn" title="Export patient data as CSV">
+    <span class="icon icon-sm"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></span>
+    Export CSV
+  </button>
+  <a href="/compare?ids={{ patient.icustay_id }}" class="btn" title="Compare with other patients">
+    <span class="icon icon-sm"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M10 3H4a1 1 0 00-1 1v6a1 1 0 001 1h6a1 1 0 001-1V4a1 1 0 00-1-1zm10 0h-6a1 1 0 00-1 1v6a1 1 0 001 1h6a1 1 0 001-1V4a1 1 0 00-1-1z"/></svg></span>
+    Compare
+  </a>
 </div>
 
 <!-- Hero -->
@@ -53,49 +99,63 @@
   <div class="risk-pill risk-{{ pred.risk_level }}">{{ pred.risk_level }} RISK</div>
 </div>
 
+<!-- Vital Trends (Sparklines) -->
+<div class="card fade-up fade-up-2">
+  <div class="card-head">
+    <span class="card-label"><span class="icon icon-sm" style="color:var(--success);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3z"/></svg></span> Vital Trends</span>
+    <span class="card-badge" id="vitalsSource">Loading...</span>
+  </div>
+  <div class="card-body">
+    <div class="sparkline-grid" id="sparklineGrid">
+      <div class="sparkline-item"><div class="skeleton skeleton-card" style="height:60px;"></div></div>
+      <div class="sparkline-item"><div class="skeleton skeleton-card" style="height:60px;"></div></div>
+      <div class="sparkline-item"><div class="skeleton skeleton-card" style="height:60px;"></div></div>
+      <div class="sparkline-item"><div class="skeleton skeleton-card" style="height:60px;"></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- Full Vitals Chart -->
+<div class="card fade-up fade-up-2">
+  <div class="card-head">
+    <span class="card-label"><span class="icon icon-sm" style="color:var(--primary);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99l1.5 1.5z"/></svg></span> Interactive Vital Signs</span>
+  </div>
+  <div class="card-body">
+    <div class="chart-tabs" id="chartTabs">
+      <button class="chart-tab active" data-key="heartrate">HR</button>
+      <button class="chart-tab" data-key="sysbp">SBP</button>
+      <button class="chart-tab" data-key="diasbp">DBP</button>
+      <button class="chart-tab" data-key="spo2">SpO2</button>
+      <button class="chart-tab" data-key="resprate">RR</button>
+      <button class="chart-tab" data-key="tempc">Temp</button>
+    </div>
+    <div class="chart-container" id="chartContainer">
+      <svg id="chartSvg" width="100%" height="100%" preserveAspectRatio="none"></svg>
+      <div class="chart-tooltip" id="chartTooltip"></div>
+    </div>
+  </div>
+</div>
+
 <!-- Demographics + SHAP -->
-<div class="grid-2 fade-up fade-up-2" style="margin-bottom: 16px;">
+<div class="grid-2 fade-up fade-up-3" style="margin-bottom: 16px;">
   <div class="card">
     <div class="card-head">
-      <span class="card-label">🏥 Demographics & Admission</span>
+      <span class="card-label"><span class="icon icon-sm" style="color:var(--primary);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-1 11h-4v4h-4v-4H6v-4h4V6h4v4h4v4z"/></svg></span> Demographics &amp; Admission</span>
     </div>
     <div class="card-body">
-      <div class="info-row">
-        <span class="info-key">Subject ID</span>
-        <span class="info-val" style="font-family:var(--ff-mono); color:var(--primary);">{{ patient.subject_id }}</span>
-      </div>
-      <div class="info-row">
-        <span class="info-key">Age / Gender</span>
-        <span class="info-val">{{ '%.0f' | format(patient.age) if patient.age else '—' }} {{ patient.gender or '' }}</span>
-      </div>
-      <div class="info-row">
-        <span class="info-key">Length of Stay</span>
-        <span class="info-val" style="color:var(--warning);">{{ '%.1f' | format(patient.los_hours) if patient.los_hours else '—' }}h</span>
-      </div>
-      <div class="info-row">
-        <span class="info-key">Diagnosis</span>
-        <span class="info-val">{{ patient.diagnosis or '—' }}</span>
-      </div>
-      <div class="info-row">
-        <span class="info-key">Care Unit</span>
-        <span class="info-val">{{ patient.first_careunit or '—' }}</span>
-      </div>
-      <div class="info-row">
-        <span class="info-key">Admission Type</span>
-        <span class="info-val">{{ patient.admission_type or '—' }}</span>
-      </div>
-      <div class="info-row">
-        <span class="info-key">Expired</span>
-        <span class="info-val" style="color:{% if patient.expire_flag %}var(--danger){% else %}var(--success){% endif %}; font-weight:600;">
-          {{ 'Yes' if patient.expire_flag else 'No' }}
-        </span>
-      </div>
+      <div class="info-row"><span class="info-key">Subject ID</span><span class="info-val" style="font-family:var(--ff-mono); color:var(--primary);">{{ patient.subject_id }}</span></div>
+      <div class="info-row"><span class="info-key">Age / Gender</span><span class="info-val">{{ '%.0f' | format(patient.age) if patient.age else '—' }} {{ patient.gender or '' }}</span></div>
+      <div class="info-row"><span class="info-key">Length of Stay</span><span class="info-val" style="color:var(--warning);">{{ '%.1f' | format(patient.los_hours) if patient.los_hours else '—' }}h</span></div>
+      <div class="info-row"><span class="info-key">Diagnosis</span><span class="info-val">{{ patient.diagnosis or '—' }}</span></div>
+      <div class="info-row"><span class="info-key">Care Unit</span><span class="info-val">{{ patient.first_careunit or '—' }}</span></div>
+      <div class="info-row"><span class="info-key">Admission Type</span><span class="info-val">{{ patient.admission_type or '—' }}</span></div>
+      <div class="info-row"><span class="info-key">Expired</span><span class="info-val" style="color:{% if patient.expire_flag %}var(--danger){% else %}var(--success){% endif %}; font-weight:600;">{{ 'Yes' if patient.expire_flag else 'No' }}</span></div>
     </div>
   </div>
 
   <div class="card">
     <div class="card-head">
-      <span class="card-label">📊 Feature Importances</span>
+      <span class="card-label"><span class="icon icon-sm" style="color:var(--primary);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg></span> Feature Importances</span>
       <span class="card-badge">SHAP</span>
     </div>
     <div class="card-body">
@@ -103,15 +163,13 @@
       {% for feat in pred.shap_features[:6] %}
       <div class="bar-row">
         <span class="bar-label" style="font-family:var(--ff-mono); font-size:12px; min-width:160px;">{{ feat.feature }}</span>
-        <div class="bar-track">
-          <div class="bar-fill" style="width:{{ [feat.value * 300, 100] | min }}%; background:var(--primary);"></div>
-        </div>
+        <div class="bar-track"><div class="bar-fill" style="width:{{ [feat.value * 300, 100] | min }}%; background:var(--primary);"></div></div>
         <span class="bar-value" style="color:var(--primary);">{{ '%.3f' | format(feat.value) }}</span>
       </div>
       {% endfor %}
       {% else %}
       <div class="empty-state">
-        <div class="empty-icon">📊</div>
+        <div class="empty-icon" style="opacity:0.5;"><span class="icon icon-xl" style="color:var(--text-3);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg></span></div>
         <div class="empty-text">SHAP explanations not available for this patient.</div>
       </div>
       {% endif %}
@@ -122,10 +180,20 @@
 <!-- Predictions -->
 <div class="card fade-up fade-up-3">
   <div class="card-head">
-    <span class="card-label">🔬 Risk Predictions — All Tasks</span>
+    <span class="card-label"><span class="icon icon-sm" style="color:var(--accent);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.8 18.4L14 10.67V6.5l1.35-1.69c.26-.33.03-.81-.39-.81H9.04c-.42 0-.65.48-.39.81L10 6.5v4.17L4.2 18.4c-.49.66-.02 1.6.8 1.6h14c.82 0 1.29-.94.8-1.6z"/></svg></span> Risk Predictions — All Tasks</span>
     <span class="card-badge">{{ pred.source }}</span>
   </div>
   <div class="card-body">
+    <!-- Legend / Explanation -->
+    <div style="background: var(--bg-card-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 16px; margin-bottom: 20px; font-size: 12px; line-height: 1.6;">
+      <div style="font-weight: 600; color: var(--text-1); margin-bottom: 6px;">How to read these predictions</div>
+      <div style="color: var(--text-2);">Each bar shows the <strong>probability (%)</strong> that this patient will experience the specified adverse event within the given time window (e.g. <code>mortality_6h</code> = risk of death within 6 hours). Higher percentage = higher risk.</div>
+      <div style="display: flex; gap: 16px; margin-top: 8px; flex-wrap: wrap;">
+        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:var(--success); margin-right:4px;"></span><span style="color:var(--success); font-weight:600;">0–30%</span> <span style="color:var(--text-3);">Low risk</span></span>
+        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:var(--warning); margin-right:4px;"></span><span style="color:var(--warning); font-weight:600;">30–60%</span> <span style="color:var(--text-3);">Moderate risk</span></span>
+        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:var(--danger); margin-right:4px;"></span><span style="color:var(--danger); font-weight:600;">60–100%</span> <span style="color:var(--text-3);">High risk</span></span>
+      </div>
+    </div>
     {% for group_name, labels in pred.groups.items() %}
     <div style="margin-bottom: 24px;">
       <div class="group-header">{{ group_name }}</div>
@@ -143,4 +211,219 @@
     {% endfor %}
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  var ICUSTAY = {{ patient.icustay_id }};
+  var vitalsData = null;
+
+  // Save to recently viewed
+  if (SmartICU && SmartICU.saveRecent) {
+    SmartICU.saveRecent(ICUSTAY, 'Patient #' + ICUSTAY);
+  }
+
+  // ── CSV Export ──────────────────────────────────────────────
+  document.getElementById('exportCsvBtn').addEventListener('click', function() {
+    var rows = [
+      ['Field', 'Value'],
+      ['ICU Stay ID', '{{ patient.icustay_id }}'],
+      ['Subject ID', '{{ patient.subject_id }}'],
+      ['Age', '{{ patient.age }}'],
+      ['Gender', '{{ patient.gender or "" }}'],
+      ['Diagnosis', '{{ patient.diagnosis or "" }}'],
+      ['Care Unit', '{{ patient.first_careunit or "" }}'],
+      ['Admission Type', '{{ patient.admission_type or "" }}'],
+      ['LOS Hours', '{{ patient.los_hours or "" }}'],
+      ['Expired', '{{ patient.expire_flag }}'],
+      ['Composite Score', '{{ pred.composite_score }}'],
+      ['Risk Level', '{{ pred.risk_level }}'],
+      ['Source', '{{ pred.source }}'],
+    ];
+    {% for group_name, labels in pred.groups.items() %}
+    {% for label, score in labels.items() %}
+    rows.push(['{{ label }}', '{{ score }}']);
+    {% endfor %}
+    {% endfor %}
+    var csv = rows.map(function(r) { return r.join(','); }).join('\n');
+    var blob = new Blob([csv], { type: 'text/csv' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'patient_' + ICUSTAY + '.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    if (window.showToast) showToast('CSV exported successfully', 'success');
+  });
+
+  // ── Sparklines ─────────────────────────────────────────────
+  function buildSparklineSVG(values, color) {
+    if (!values || values.length < 2) return '';
+    var min = Math.min.apply(null, values), max = Math.max.apply(null, values);
+    var range = max - min || 1;
+    var w = 120, h = 32, pad = 2;
+    var pts = values.map(function(v, i) {
+      var x = pad + (i / (values.length - 1)) * (w - 2 * pad);
+      var y = h - pad - ((v - min) / range) * (h - 2 * pad);
+      return x + ',' + y;
+    });
+    return '<svg viewBox="0 0 ' + w + ' ' + h + '" class="sparkline-svg" preserveAspectRatio="none">'
+      + '<polyline fill="none" stroke="' + color + '" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" points="' + pts.join(' ') + '"/>'
+      + '</svg>';
+  }
+
+  function renderSparklines(vitals) {
+    var grid = document.getElementById('sparklineGrid');
+    var items = [
+      { key: 'heartrate', label: 'Heart Rate', unit: 'bpm', color: 'var(--danger)' },
+      { key: 'sysbp', label: 'Systolic BP', unit: 'mmHg', color: 'var(--primary)' },
+      { key: 'spo2', label: 'SpO₂', unit: '%', color: 'var(--success)' },
+      { key: 'resprate', label: 'Resp Rate', unit: '/min', color: 'var(--accent)' },
+    ];
+    var html = '';
+    items.forEach(function(item) {
+      var vals = (vitals[item.key] || []).map(function(d) { return d.value || d; });
+      var last = vals.length ? vals[vals.length - 1] : '—';
+      if (typeof last === 'number') last = last.toFixed(1);
+      html += '<div class="sparkline-item">'
+        + '<div class="sparkline-label">' + item.label + '</div>'
+        + '<div class="sparkline-value" style="color:' + item.color + ';">' + last + ' <span style="font-size:10px;color:var(--text-3);">' + item.unit + '</span></div>'
+        + buildSparklineSVG(vals, item.color)
+        + '</div>';
+    });
+    grid.innerHTML = html;
+  }
+
+  // ── Full Chart ─────────────────────────────────────────────
+  var currentKey = 'heartrate';
+  var chartColors = {
+    heartrate: 'var(--danger)', sysbp: 'var(--primary)', diasbp: 'var(--accent)',
+    spo2: 'var(--success)', resprate: 'var(--warning)', tempc: '#e879f9'
+  };
+
+  function drawChart(key) {
+    currentKey = key;
+    var svg = document.getElementById('chartSvg');
+    var container = document.getElementById('chartContainer');
+    var tooltip = document.getElementById('chartTooltip');
+    if (!vitalsData || !vitalsData[key]) {
+      svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="var(--text-3)" font-size="13">No data available</text>';
+      return;
+    }
+    var vals = vitalsData[key].map(function(d) { return typeof d === 'object' ? d.value : d; });
+    if (vals.length < 2) { svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="var(--text-3)" font-size="13">Insufficient data points</text>'; return; }
+
+    var w = container.clientWidth, h = 280;
+    var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+    var range = max - min || 1;
+    var padL = 50, padR = 10, padT = 20, padB = 50;
+    var color = chartColors[key] || 'var(--primary)';
+
+    var pts = vals.map(function(v, i) {
+      var x = padL + (i / (vals.length - 1)) * (w - padL - padR);
+      var y = padT + (1 - (v - min) / range) * (h - padT - padB);
+      return { x: x, y: y, val: v };
+    });
+
+    var path = pts.map(function(p, i) { return (i === 0 ? 'M' : 'L') + p.x + ',' + p.y; }).join(' ');
+    var areaPath = path + ' L' + pts[pts.length-1].x + ',' + (h - padB) + ' L' + pts[0].x + ',' + (h - padB) + ' Z';
+
+    // Y-axis labels
+    var yLabels = '';
+    for (var yi = 0; yi <= 4; yi++) {
+      var yv = min + (yi / 4) * range;
+      var yy = padT + (1 - yi / 4) * (h - padT - padB);
+      yLabels += '<text x="' + (padL - 8) + '" y="' + (yy + 4) + '" text-anchor="end" fill="var(--text-3)" font-size="10" font-family="var(--ff-mono)">' + yv.toFixed(1) + '</text>';
+      yLabels += '<line x1="' + padL + '" y1="' + yy + '" x2="' + (w - padR) + '" y2="' + yy + '" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="4"/>';
+    }
+
+    // X-axis time labels
+    var xLabels = '';
+    var xAxisY = h - padB + 4;
+    // Show ~6 evenly spaced time labels along x-axis
+    var rawVitals = window._rawVitals || [];
+    var numXLabels = Math.min(6, vals.length);
+    for (var xi = 0; xi < numXLabels; xi++) {
+      var idx = Math.round(xi * (vals.length - 1) / (numXLabels - 1));
+      var xx = padL + (idx / (vals.length - 1)) * (w - padL - padR);
+      var timeLabel = '';
+      if (rawVitals[idx] && rawVitals[idx].charttime) {
+        var ct = rawVitals[idx].charttime;
+        // Extract HH:MM from ISO datetime string
+        var tparts = ct.split('T');
+        if (tparts[1]) { timeLabel = tparts[1].substring(0, 5); }
+        else { timeLabel = 'T' + idx; }
+        // Add date on first and last labels
+        if (xi === 0 || xi === numXLabels - 1) { timeLabel = tparts[0].substring(5) + ' ' + timeLabel; }
+      } else {
+        timeLabel = 'hr ' + idx;
+      }
+      xLabels += '<text x="' + xx + '" y="' + (xAxisY + 14) + '" text-anchor="middle" fill="var(--text-3)" font-size="9" font-family="var(--ff-mono)">' + timeLabel + '</text>';
+      xLabels += '<line x1="' + xx + '" y1="' + (xAxisY) + '" x2="' + xx + '" y2="' + (xAxisY + 4) + '" stroke="var(--text-3)" stroke-width="0.5"/>';
+    }
+    // X-axis baseline
+    xLabels += '<line x1="' + padL + '" y1="' + (h - padB) + '" x2="' + (w - padR) + '" y2="' + (h - padB) + '" stroke="var(--border)" stroke-width="1"/>';
+    // "Time" label
+    xLabels += '<text x="' + ((padL + w - padR) / 2) + '" y="' + (h - 4) + '" text-anchor="middle" fill="var(--text-3)" font-size="10" font-weight="600" letter-spacing="0.05em">TIME</text>';
+
+    svg.innerHTML = yLabels + xLabels
+      + '<path d="' + areaPath + '" fill="' + color + '" opacity="0.08"/>'
+      + '<path d="' + path + '" fill="none" stroke="' + color + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+      + pts.map(function(p) { return '<circle cx="' + p.x + '" cy="' + p.y + '" r="3" fill="' + color + '" class="chart-dot" data-val="' + p.val.toFixed(2) + '"/>'; }).join('');
+
+    // Hover tooltips
+    var dots = svg.querySelectorAll('.chart-dot');
+    dots.forEach(function(dot) {
+      dot.addEventListener('mouseenter', function(e) {
+        tooltip.textContent = key + ': ' + dot.getAttribute('data-val');
+        tooltip.style.display = 'block';
+        tooltip.style.left = (parseFloat(dot.getAttribute('cx')) - 30) + 'px';
+        tooltip.style.top = (parseFloat(dot.getAttribute('cy')) - 30) + 'px';
+      });
+      dot.addEventListener('mouseleave', function() { tooltip.style.display = 'none'; });
+    });
+  }
+
+  // Tab switching
+  document.getElementById('chartTabs').addEventListener('click', function(e) {
+    var tab = e.target.closest('.chart-tab');
+    if (!tab) return;
+    document.querySelectorAll('.chart-tab').forEach(function(t) { t.classList.remove('active'); });
+    tab.classList.add('active');
+    drawChart(tab.dataset.key);
+  });
+
+  // ── Fetch Vitals ───────────────────────────────────────────
+  // API returns [{charttime, heartrate, sysbp, ...}, ...] — pivot to {heartrate: [v1,...]}
+  function pivotVitals(rawList) {
+    if (!Array.isArray(rawList) || rawList.length === 0) return {};
+    var keys = ['heartrate','sysbp','diasbp','meanbp','resprate','tempc','spo2','glucose'];
+    var result = {};
+    keys.forEach(function(k) { result[k] = []; });
+    rawList.forEach(function(row) {
+      keys.forEach(function(k) {
+        if (row[k] !== null && row[k] !== undefined && !isNaN(row[k])) {
+          result[k].push(row[k]);
+        }
+      });
+    });
+    return result;
+  }
+
+  fetch('/api/patients/' + ICUSTAY + '/vitals')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var rawVitals = data.vitals || [];
+      window._rawVitals = rawVitals;
+      vitalsData = pivotVitals(rawVitals);
+      document.getElementById('vitalsSource').textContent = data.source || 'loaded';
+      renderSparklines(vitalsData);
+      drawChart(currentKey);
+    })
+    .catch(function(err) {
+      document.getElementById('vitalsSource').textContent = 'unavailable';
+      document.getElementById('sparklineGrid').innerHTML = '<div style="grid-column:span 4; text-align:center; padding:20px; color:var(--text-3); font-size:13px;">Unable to load vital signs data</div>';
+    });
+})();
+</script>
 {% endblock %}

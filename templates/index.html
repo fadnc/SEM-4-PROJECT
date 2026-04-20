@@ -66,40 +66,75 @@
 <div class="hero-banner fade-up">
   <div class="hero-title">Smart ICU Assistant</div>
   <div class="hero-sub">Real-time ICU patient monitoring and multi-task risk prediction powered by deep learning ensembles on MIMIC-III clinical data.</div>
-  <div class="hero-tag">🏥 {{ stats.total_stays | default(0) }} ICU Stays Monitored</div>
+  <div class="hero-tag"><span class="icon icon-sm" style="color:white;"><svg viewBox="0 0 24 24" fill="white"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-1 11h-4v4h-4v-4H6v-4h4V6h4v4h4v4z"/></svg></span> {{ stats.total_stays | default(0) }} ICU Stays Monitored</div>
 </div>
+
+<!-- Risk Alert Banner -->
+{% if stats.risk_dist and stats.risk_dist.HIGH and stats.risk_dist.HIGH > 0 %}
+<div class="risk-alert-banner fade-up" id="riskAlertBanner">
+  <span class="icon icon-sm" style="color:var(--danger);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg></span>
+  <span style="font-size:13px; color:var(--danger); font-weight:600;">
+    <strong>{{ stats.risk_dist.HIGH }}</strong> patients at HIGH risk
+    <a href="/patients?risk=HIGH" style="color:var(--danger); margin-left:8px; text-decoration:underline;">View all →</a>
+  </span>
+  <button class="alert-dismiss" onclick="this.parentElement.style.display='none'" title="Dismiss">&times;</button>
+</div>
+{% endif %}
 
 <!-- Stat Cards -->
 <div class="grid-4 fade-up fade-up-1" style="margin-bottom: 20px;">
   <div class="stat-tile">
-    <div class="stat-icon" style="background: var(--primary-bg); color: var(--primary);">🛏️</div>
+    <div class="stat-icon-svg" style="background: var(--primary-bg); color: var(--primary);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 13c1.66 0 3-1.34 3-3S8.66 7 7 7s-3 1.34-3 3 1.34 3 3 3zm12-6h-8v7H3V5H1v15h2v-3h18v3h2v-9c0-2.21-1.79-4-4-4z"/></svg></div>
     <div class="stat-label">Total ICU Stays</div>
     <div class="stat-value" style="color:var(--primary)">{{ stats.total_stays | default('—') }}</div>
   </div>
   <div class="stat-tile">
-    <div class="stat-icon" style="background: var(--success-bg); color: var(--success);">👤</div>
+    <div class="stat-icon-svg" style="background: var(--success-bg); color: var(--success);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></div>
     <div class="stat-label">Unique Patients</div>
     <div class="stat-value" style="color:var(--success)">{{ stats.total_patients | default('—') }}</div>
   </div>
   <div class="stat-tile">
-    <div class="stat-icon" style="background: var(--warning-bg); color: var(--warning);">📊</div>
+    <div class="stat-icon-svg" style="background: var(--warning-bg); color: var(--warning);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg></div>
     <div class="stat-label">Mean Age</div>
     <div class="stat-value">{{ stats.mean_age | default('—') }}</div>
     <div class="stat-sub">years</div>
   </div>
   <div class="stat-tile">
-    <div class="stat-icon" style="background: var(--danger-bg); color: var(--danger);">⏱️</div>
+    <div class="stat-icon-svg" style="background: var(--danger-bg); color: var(--danger);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/></svg></div>
     <div class="stat-label">Mean LOS</div>
     <div class="stat-value" style="color:var(--warning)">{{ '%.1f' | format(stats.mean_los_hours) if stats.mean_los_hours else '—' }}</div>
     <div class="stat-sub">hours</div>
   </div>
 </div>
 
+<!-- Model Performance Summary -->
+{% if report_data %}
+<div class="card fade-up fade-up-4" style="margin-top: 20px;">
+  <div class="card-head">
+    <span class="card-label"><span class="icon icon-sm" style="color:var(--primary);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99l1.5 1.5z"/></svg></span> Model Performance</span>
+    <span class="card-badge">{{ report_data | length }} tasks</span>
+  </div>
+  <div class="card-body">
+    {% for task_name, metrics in report_data.items() %}
+    <div class="bar-row">
+      <span class="bar-label" style="font-family:var(--ff-mono); font-size:12px; min-width:160px;">{{ task_name }}</span>
+      <div class="bar-track">
+        {% set auroc = metrics.get('best_auroc', 0) %}
+        {% set acolor = 'var(--success)' if auroc >= 0.7 else 'var(--warning)' if auroc >= 0.5 else 'var(--danger)' %}
+        <div class="bar-fill" style="width:{{ (auroc * 100) }}%; background:{{ acolor }};"></div>
+      </div>
+      <span class="bar-value" style="color:{{ acolor }};">{{ '%.3f' | format(auroc) }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 <!-- Models & Risk -->
 <div class="grid-2 fade-up fade-up-2">
   <div class="card">
     <div class="card-head">
-      <span class="card-label">🧠 Trained Models</span>
+      <span class="card-label"><span class="icon icon-sm" style="color:var(--primary);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 1.07V9h7c0-4.08-3.05-7.44-7-7.93zM4 15c0 4.42 3.58 8 8 8s8-3.58 8-8v-4H4v4zm7-13.93C7.05 1.56 4 4.92 4 9h7V1.07z"/></svg></span> Trained Models</span>
       <span class="card-badge">{{ models | length }} loaded</span>
     </div>
     <div class="card-body">
@@ -112,7 +147,7 @@
         {% endfor %}
       {% else %}
         <div class="empty-state">
-          <div class="empty-icon">🧠</div>
+          <div class="empty-icon" style="opacity:0.5;"><span class="icon icon-xl" style="color:var(--text-3);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 1.07V9h7c0-4.08-3.05-7.44-7-7.93zM4 15c0 4.42 3.58 8 8 8s8-3.58 8-8v-4H4v4zm7-13.93C7.05 1.56 4 4.92 4 9h7V1.07z"/></svg></span></div>
           <div class="empty-text">No models loaded.<br>Run the training pipeline first.</div>
         </div>
       {% endif %}
@@ -121,7 +156,7 @@
 
   <div class="card">
     <div class="card-head">
-      <span class="card-label">⚠️ Risk Distribution</span>
+      <span class="card-label"><span class="icon icon-sm" style="color:var(--warning);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg></span> Risk Distribution</span>
       <span class="card-badge">{{ stats.total_stays | default(0) }} patients</span>
     </div>
     <div class="card-body">
@@ -148,21 +183,68 @@
 </div>
 
 <!-- Quick Links -->
-<div class="grid-3 fade-up fade-up-3" style="margin-top: 20px;">
+<div class="grid-4 fade-up fade-up-3" style="margin-top: 20px;">
   <a href="/patients" class="link-card" style="border-left: 3px solid var(--primary);">
-    <div class="link-icon">👥</div>
+    <div class="link-icon"><span class="icon icon-lg" style="color:var(--primary);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg></span></div>
     <div class="link-title">Browse Patients</div>
     <div class="link-desc">Search and explore all ICU stays in MIMIC-III</div>
   </a>
   <a href="/validation" class="link-card" style="border-left: 3px solid var(--success);">
-    <div class="link-icon">🎯</div>
+    <div class="link-icon"><span class="icon icon-lg" style="color:var(--success);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg></span></div>
     <div class="link-title">Validation Demo</div>
     <div class="link-desc">Predict test patients and compare with ground truth</div>
   </a>
+  <a href="/predict" class="link-card" style="border-left: 3px solid var(--accent);">
+    <div class="link-icon"><span class="icon icon-lg" style="color:var(--accent);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg></span></div>
+    <div class="link-title">New Patient Prediction</div>
+    <div class="link-desc">Enter vitals and labs to get real-time risk assessment</div>
+  </a>
   <a href="/docs" target="_blank" class="link-card" style="border-left: 3px solid var(--warning);">
-    <div class="link-icon">📋</div>
+    <div class="link-icon"><span class="icon icon-lg" style="color:var(--warning);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg></span></div>
     <div class="link-title">API Documentation</div>
     <div class="link-desc">Swagger UI with all REST endpoints</div>
   </a>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Animated counter effect for stat values
+(function() {
+  function animateCounter(el) {
+    var text = el.textContent.trim();
+    if (text === '—' || text === '') return;
+    var isFloat = text.indexOf('.') !== -1;
+    var target = parseFloat(text);
+    if (isNaN(target)) return;
+    var decimals = isFloat ? (text.split('.')[1] || '').length : 0;
+    var duration = 1200;
+    var start = 0;
+    var startTime = null;
+    el.textContent = isFloat ? (0).toFixed(decimals) : '0';
+    function step(ts) {
+      if (!startTime) startTime = ts;
+      var progress = Math.min((ts - startTime) / duration, 1);
+      var eased = 1 - Math.pow(1 - progress, 3); // ease-out cubic
+      var current = start + (target - start) * eased;
+      el.textContent = isFloat ? current.toFixed(decimals) : Math.round(current).toString();
+      if (progress < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  var observer = new IntersectionObserver(function(entries) {
+    entries.forEach(function(entry) {
+      if (entry.isIntersecting) {
+        var stats = entry.target.querySelectorAll('.stat-value');
+        stats.forEach(animateCounter);
+        observer.unobserve(entry.target);
+      }
+    });
+  }, { threshold: 0.3 });
+
+  var grid = document.querySelector('.grid-4');
+  if (grid) observer.observe(grid);
+})();
+</script>
 {% endblock %}

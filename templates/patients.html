@@ -3,7 +3,7 @@
 
 {% block content %}
 <div class="page-header fade-up">
-  <div class="page-eyebrow">👥 Patient Browser</div>
+  <div class="page-eyebrow">Patient Browser</div>
   <h1 class="page-title">ICU Patients</h1>
   <p class="page-sub">Browse all ICU stays from MIMIC-III. Click any row for detailed predictions.</p>
 </div>
@@ -11,7 +11,7 @@
 <!-- Search -->
 <div class="card fade-up fade-up-1">
   <div class="card-head">
-    <span class="card-label">🔍 Search & Filter</span>
+    <span class="card-label"><span class="icon icon-sm" style="color:var(--text-2);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg></span> Search &amp; Filter</span>
     <span class="card-badge">{{ total }} results</span>
   </div>
   <div class="card-body">
@@ -24,9 +24,9 @@
       <select name="risk" style="padding:10px 14px; background:var(--bg-input); border:1px solid var(--border-2);
         border-radius:var(--radius-sm); color:var(--text-1); font-size:13px; font-family:inherit;">
         <option value="">All Risk Levels</option>
-        <option value="HIGH" {% if risk == 'HIGH' %}selected{% endif %}>🔴 HIGH</option>
-        <option value="MEDIUM" {% if risk == 'MEDIUM' %}selected{% endif %}>🟡 MEDIUM</option>
-        <option value="LOW" {% if risk == 'LOW' %}selected{% endif %}>🟢 LOW</option>
+        <option value="HIGH" {% if risk == 'HIGH' %}selected{% endif %}><span style="color:var(--danger);">&#9679;</span> HIGH</option>
+        <option value="MEDIUM" {% if risk == 'MEDIUM' %}selected{% endif %}><span style="color:var(--warning);">&#9679;</span> MEDIUM</option>
+        <option value="LOW" {% if risk == 'LOW' %}selected{% endif %}><span style="color:var(--success);">&#9679;</span> LOW</option>
       </select>
       <button type="submit" class="btn btn-primary">Search</button>
     </form>
@@ -71,7 +71,7 @@
     </table>
     {% else %}
     <div class="empty-state">
-      <div class="empty-icon">🔍</div>
+      <div class="empty-icon" style="opacity:0.5;"><span class="icon icon-xl" style="color:var(--text-3);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg></span></div>
       <div class="empty-text">No patients found matching your search.</div>
     </div>
     {% endif %}
@@ -96,4 +96,44 @@
   {% endif %}
 </div>
 {% endif %}
+
+{% block scripts %}
+<script>
+(function() {
+  var form = document.querySelector('form[action="/patients"]');
+  var searchInput = form && form.querySelector('input[name="q"]');
+  var riskSelect = form && form.querySelector('select[name="risk"]');
+  var debounceTimer = null;
+
+  // Restore saved filters if no URL params exist
+  var urlParams = new URLSearchParams(window.location.search);
+  if (!urlParams.get('q') && searchInput && SmartICU.getFilter('patients_q')) {
+    searchInput.value = SmartICU.getFilter('patients_q');
+  }
+
+  // Debounced auto-submit on search input
+  if (searchInput) {
+    searchInput.addEventListener('input', function() {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(function() {
+        SmartICU.saveFilter('patients_q', searchInput.value);
+        form.submit();
+      }, 300);
+    });
+  }
+
+  // Auto-submit on risk filter change
+  if (riskSelect) {
+    riskSelect.addEventListener('change', function() {
+      SmartICU.saveFilter('patients_risk', riskSelect.value);
+      form.submit();
+    });
+  }
+
+  // Save current filters on page load
+  if (searchInput) SmartICU.saveFilter('patients_q', searchInput.value);
+  if (riskSelect) SmartICU.saveFilter('patients_risk', riskSelect.value);
+})();
+</script>
+{% endblock %}
 {% endblock %}

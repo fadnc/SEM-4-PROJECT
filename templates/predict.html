@@ -1,0 +1,543 @@
+{% extends "base.html" %}
+{% block title %}Smart ICU — New Patient Prediction{% endblock %}
+
+{% block extra_css %}
+    .predict-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .form-section { margin-bottom: 20px; }
+    .form-section-title {
+      font-size: 11px; font-weight: 700; color: var(--primary);
+      letter-spacing: 0.06em; text-transform: uppercase;
+      margin-bottom: 12px; padding-bottom: 6px;
+      border-bottom: 2px solid var(--primary-bg);
+    }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .form-group { display: flex; flex-direction: column; gap: 4px; }
+    .form-label {
+      font-size: 11px; font-weight: 600; color: var(--text-3);
+      letter-spacing: 0.04em; text-transform: uppercase;
+    }
+    .form-input {
+      padding: 9px 12px; background: var(--bg-input); border: 1px solid var(--border-2);
+      border-radius: var(--radius-sm); color: var(--text-1); font-size: 13px;
+      font-family: var(--ff-mono); outline: none; transition: border-color var(--transition);
+    }
+    .form-input:focus { border-color: var(--primary); }
+    .form-check {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 0; font-size: 13px; color: var(--text-2);
+    }
+    .form-check input[type="checkbox"] {
+      width: 16px; height: 16px; accent-color: var(--primary);
+    }
+    .form-select {
+      padding: 9px 12px; background: var(--bg-input); border: 1px solid var(--border-2);
+      border-radius: var(--radius-sm); color: var(--text-1); font-size: 13px;
+      font-family: inherit; outline: none; transition: border-color var(--transition);
+    }
+    .form-select:focus { border-color: var(--primary); }
+
+    /* Results panel */
+    .results-panel { display: none; }
+    .results-panel.visible { display: block; }
+    .risk-hero {
+      text-align: center; padding: 24px; margin-bottom: 16px;
+      border-radius: var(--radius); border: 2px solid var(--border);
+      background: var(--bg-card-2);
+    }
+    .risk-score { font-size: 48px; font-weight: 700; line-height: 1; }
+    .risk-badge {
+      display: inline-block; font-size: 14px; font-weight: 700;
+      padding: 6px 20px; border-radius: 100px; margin-top: 8px;
+      letter-spacing: 0.06em;
+    }
+    .risk-HIGH { background: var(--danger-bg); color: var(--danger); border: 2px solid var(--danger-border); }
+    .risk-MEDIUM { background: var(--warning-bg); color: var(--warning); border: 2px solid var(--warning-border); }
+    .risk-LOW { background: var(--success-bg); color: var(--success); border: 2px solid var(--success-border); }
+    .alert-item {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 10px 14px; border-radius: var(--radius-sm);
+      margin-bottom: 8px; font-size: 13px;
+    }
+    .alert-critical {
+      background: var(--danger-bg); border: 1px solid var(--danger-border); color: var(--danger);
+    }
+    .alert-warning {
+      background: var(--warning-bg); border: 1px solid var(--warning-border); color: var(--warning);
+    }
+    .alert-icon { flex-shrink: 0; margin-top: 1px; }
+    .clinical-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+    .clinical-stat {
+      text-align: center; padding: 12px; background: var(--bg-card-2);
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+    }
+    .clinical-stat .c-val { font-size: 20px; font-weight: 700; font-family: var(--ff-mono); }
+    .clinical-stat .c-label { font-size: 10px; font-weight: 600; color: var(--text-3); text-transform: uppercase; margin-top: 4px; }
+
+    .loading-overlay {
+      display: none; position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(var(--bg), 0.8); z-index: 10;
+      place-items: center; border-radius: var(--radius);
+    }
+    .loading-overlay.visible { display: grid; }
+    .spinner {
+      width: 32px; height: 32px; border: 3px solid var(--border-2);
+      border-top-color: var(--primary); border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    @media (max-width: 768px) {
+      .predict-layout { grid-template-columns: 1fr; }
+      .form-grid { grid-template-columns: 1fr; }
+      .clinical-grid { grid-template-columns: 1fr 1fr; }
+    }
+    /* Batch Upload */
+    .batch-section {
+      margin-top: 24px; padding: 20px; background: var(--bg-card-2);
+      border: 2px dashed var(--border-2); border-radius: var(--radius);
+      text-align: center; transition: border-color var(--transition);
+    }
+    .batch-section:hover { border-color: var(--primary); }
+    .batch-results { margin-top: 16px; max-height: 400px; overflow-y: auto; }
+{% endblock %}
+
+{% block content %}
+<div class="page-header fade-up">
+  <div class="page-eyebrow">New Patient Assessment</div>
+  <h1 class="page-title">Risk Prediction</h1>
+  <p class="page-sub">Enter patient vitals, labs, and demographics to get real-time risk predictions across all 7 clinical tasks.</p>
+</div>
+
+<div class="predict-layout">
+  <!-- Left: Input Form -->
+  <div class="fade-up fade-up-1">
+    <form id="predictForm">
+      <!-- Demographics -->
+      <div class="card">
+        <div class="card-head">
+          <span class="card-label"><span class="icon icon-sm" style="color:var(--primary);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></span> Demographics</span>
+        </div>
+        <div class="card-body">
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label" for="age">Age (years)</label>
+              <input class="form-input" type="number" id="age" name="age" value="60" min="0" max="120" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="gender">Gender</label>
+              <select class="form-select" id="gender" name="gender">
+                <option value="M">Male</option>
+                <option value="F">Female</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="weight">Weight (kg)</label>
+              <input class="form-input" type="number" id="weight" name="weight_kg" value="75" step="0.1" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Vitals -->
+      <div class="card">
+        <div class="card-head">
+          <span class="card-label"><span class="icon icon-sm" style="color:var(--success);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.16-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg></span> Vital Signs</span>
+        </div>
+        <div class="card-body">
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label" for="heartrate">Heart Rate (bpm)</label>
+              <input class="form-input" type="number" id="heartrate" name="heartrate" value="80" step="1" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="sysbp">Systolic BP (mmHg)</label>
+              <input class="form-input" type="number" id="sysbp" name="sysbp" value="120" step="1" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="diasbp">Diastolic BP (mmHg)</label>
+              <input class="form-input" type="number" id="diasbp" name="diasbp" value="80" step="1" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="meanbp">MAP (mmHg)</label>
+              <input class="form-input" type="number" id="meanbp" name="meanbp" value="90" step="1" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="resprate">Resp Rate (/min)</label>
+              <input class="form-input" type="number" id="resprate" name="resprate" value="16" step="1" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="tempc">Temperature (C)</label>
+              <input class="form-input" type="number" id="tempc" name="tempc" value="37.0" step="0.1" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="spo2">SpO2 (%)</label>
+              <input class="form-input" type="number" id="spo2" name="spo2" value="98" step="0.1" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="glucose">Glucose (mg/dL)</label>
+              <input class="form-input" type="number" id="glucose" name="glucose" value="100" step="1" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Labs -->
+      <div class="card">
+        <div class="card-head">
+          <span class="card-label"><span class="icon icon-sm" style="color:var(--accent);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.8 18.4L14 10.67V6.5l1.35-1.69c.26-.33.03-.81-.39-.81H9.04c-.42 0-.65.48-.39.81L10 6.5v4.17L4.2 18.4c-.49.66-.02 1.6.8 1.6h14c.82 0 1.29-.94.8-1.6z"/></svg></span> Laboratory Values</span>
+        </div>
+        <div class="card-body">
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label" for="creatinine">Creatinine (mg/dL)</label>
+              <input class="form-input" type="number" id="creatinine" name="creatinine" value="1.0" step="0.1" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="lactate">Lactate (mmol/L)</label>
+              <input class="form-input" type="number" id="lactate" name="lactate" value="1.0" step="0.1" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="wbc">WBC (/uL)</label>
+              <input class="form-input" type="number" id="wbc" name="wbc" value="8000" step="100" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="hemoglobin">Hemoglobin (g/dL)</label>
+              <input class="form-input" type="number" id="hemoglobin" name="hemoglobin" value="13.0" step="0.1" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="platelets">Platelets (x10^3/uL)</label>
+              <input class="form-input" type="number" id="platelets" name="platelets" value="250" step="1" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="bicarbonate">Bicarbonate (mEq/L)</label>
+              <input class="form-input" type="number" id="bicarbonate" name="bicarbonate" value="24" step="0.1" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="chloride">Chloride (mEq/L)</label>
+              <input class="form-input" type="number" id="chloride" name="chloride" value="102" step="1" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Medications & History -->
+      <div class="card">
+        <div class="card-head">
+          <span class="card-label"><span class="icon icon-sm" style="color:var(--warning);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M4.22 11.29l4.95-4.95a3.5 3.5 0 014.95 0l4.95 4.95a3.5 3.5 0 010 4.95l-4.95 4.95a3.5 3.5 0 01-4.95 0l-4.95-4.95a3.5 3.5 0 010-4.95zM12 7.5L7.5 12 12 16.5 16.5 12 12 7.5z"/></svg></span> Medications &amp; History</span>
+        </div>
+        <div class="card-body">
+          <div class="form-grid">
+            <div class="form-check">
+              <input type="checkbox" id="vasopressors" name="vasopressors" />
+              <label for="vasopressors">Currently on Vasopressors</label>
+            </div>
+            <div class="form-check">
+              <input type="checkbox" id="antibiotics" name="antibiotics" />
+              <label for="antibiotics">Currently on Antibiotics</label>
+            </div>
+            <div class="form-check">
+              <input type="checkbox" id="mech_vent" name="mechanical_ventilation" />
+              <label for="mech_vent">Mechanical Ventilation</label>
+            </div>
+            <div class="form-check">
+              <input type="checkbox" id="sedation" name="sedation" />
+              <label for="sedation">Currently Sedated</label>
+            </div>
+          </div>
+          <div class="form-grid" style="margin-top: 12px;">
+            <div class="form-group">
+              <label class="form-label" for="hours_icu">Hours in ICU</label>
+              <input class="form-input" type="number" id="hours_icu" name="hours_in_icu" value="6" step="0.1" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="prior_icu">Prior ICU Admissions</label>
+              <input class="form-input" type="number" id="prior_icu" name="prior_icu_admissions" value="0" min="0" />
+            </div>
+            <div class="form-group" style="grid-column: span 2;">
+              <label class="form-label" for="diagnosis">Primary Diagnosis</label>
+              <input class="form-input" type="text" id="diagnosis" name="diagnosis" placeholder="e.g. Pneumonia, STEMI, Sepsis..." style="font-family: inherit;" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <button type="submit" class="btn btn-primary" style="width: 100%; padding: 12px; font-size: 14px; justify-content: center;" id="submitBtn">
+        <span class="icon icon-sm"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg></span>
+        Run Prediction
+      </button>
+    </form>
+  </div>
+
+  <!-- Right: Results Panel -->
+  <div class="fade-up fade-up-2">
+    <div id="resultsPanel" class="results-panel">
+      <!-- Risk Score -->
+      <div class="risk-hero" id="riskHero">
+        <div style="font-size:11px; font-weight:600; color:var(--text-3); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:6px;">Composite Risk Score</div>
+        <div class="risk-score" id="riskScore">0.00</div>
+        <div><span class="risk-badge" id="riskBadge">LOW RISK</span></div>
+        <div style="font-size:11px; color:var(--text-3); margin-top:8px;" id="sourceLabel">Source: clinical_rules</div>
+      </div>
+
+      <!-- Clinical Markers -->
+      <div class="card">
+        <div class="card-head">
+          <span class="card-label"><span class="icon icon-sm" style="color:var(--primary);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg></span> Clinical Markers</span>
+        </div>
+        <div class="card-body">
+          <div class="clinical-grid" id="clinicalGrid"></div>
+        </div>
+      </div>
+
+      <!-- Alerts -->
+      <div class="card" id="alertsCard" style="display:none;">
+        <div class="card-head">
+          <span class="card-label"><span class="icon icon-sm" style="color:var(--danger);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg></span> Clinical Alerts</span>
+          <span class="card-badge" id="alertCount">0 alerts</span>
+        </div>
+        <div class="card-body" id="alertsList"></div>
+      </div>
+
+      <!-- Per-Task Predictions -->
+      <div class="card">
+        <div class="card-head">
+          <span class="card-label"><span class="icon icon-sm" style="color:var(--accent);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.8 18.4L14 10.67V6.5l1.35-1.69c.26-.33.03-.81-.39-.81H9.04c-.42 0-.65.48-.39.81L10 6.5v4.17L4.2 18.4c-.49.66-.02 1.6.8 1.6h14c.82 0 1.29-.94.8-1.6z"/></svg></span> Risk Predictions by Task</span>
+        </div>
+        <div class="card-body" id="taskPredictions"></div>
+      </div>
+    </div>
+
+    <!-- Empty state -->
+    <div id="emptyState" class="card">
+      <div class="card-body">
+        <div class="empty-state">
+          <div class="empty-icon" style="opacity:0.5;"><span class="icon icon-xl" style="color:var(--text-3);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg></span></div>
+          <div class="empty-text">Fill in the patient data on the left<br/>and click "Run Prediction" to see results.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Batch Prediction Upload -->
+<div class="card fade-up fade-up-3" style="margin-top:24px;">
+  <div class="card-head">
+    <span class="card-label"><span class="icon icon-sm" style="color:var(--accent);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></span> Batch Prediction</span>
+  </div>
+  <div class="card-body">
+    <div class="batch-section" id="batchDrop">
+      <input type="file" id="batchFile" accept=".csv" style="display:none;" />
+      <div style="margin-bottom:8px;"><span class="icon icon-lg" style="color:var(--text-3);"><svg viewBox="0 0 24 24" fill="currentColor" width="32" height="32"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></span></div>
+      <p style="font-size:13px; color:var(--text-2); margin-bottom:8px;">Upload a CSV file with patient data to run batch predictions</p>
+      <button class="btn btn-primary" onclick="document.getElementById('batchFile').click()" style="padding:8px 20px; font-size:12px;">Choose CSV File</button>
+      <p style="font-size:10px; color:var(--text-3); margin-top:8px;">Required columns: age, gender, heartrate, sysbp, diasbp, meanbp, resprate, tempc, spo2, glucose, creatinine, lactate, wbc, hemoglobin, platelets, bicarbonate, chloride</p>
+    </div>
+    <div class="batch-results" id="batchResults" style="display:none;"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  const form = document.getElementById('predictForm');
+  const resultsPanel = document.getElementById('resultsPanel');
+  const emptyState = document.getElementById('emptyState');
+  const submitBtn = document.getElementById('submitBtn');
+
+  form.addEventListener('submit', async function(e) {
+    e.preventDefault();
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span class="spinner" style="width:16px;height:16px;border-width:2px;"></span> Predicting...';
+
+    const payload = {
+      demographics: {
+        age: parseInt(document.getElementById('age').value) || 60,
+        gender: document.getElementById('gender').value || 'M',
+        weight_kg: parseFloat(document.getElementById('weight').value) || 75
+      },
+      vitals: {
+        heartrate: parseFloat(document.getElementById('heartrate').value) || 80,
+        sysbp: parseFloat(document.getElementById('sysbp').value) || 120,
+        diasbp: parseFloat(document.getElementById('diasbp').value) || 80,
+        meanbp: parseFloat(document.getElementById('meanbp').value) || 90,
+        resprate: parseFloat(document.getElementById('resprate').value) || 16,
+        tempc: parseFloat(document.getElementById('tempc').value) || 37.0,
+        spo2: parseFloat(document.getElementById('spo2').value) || 98,
+        glucose: parseFloat(document.getElementById('glucose').value) || 100
+      },
+      labs: {
+        creatinine: parseFloat(document.getElementById('creatinine').value) || 1.0,
+        lactate: parseFloat(document.getElementById('lactate').value) || 1.0,
+        wbc: parseFloat(document.getElementById('wbc').value) || 8000,
+        hemoglobin: parseFloat(document.getElementById('hemoglobin').value) || 13.0,
+        platelets: parseFloat(document.getElementById('platelets').value) || 250,
+        bicarbonate: parseFloat(document.getElementById('bicarbonate').value) || 24,
+        chloride: parseFloat(document.getElementById('chloride').value) || 102
+      },
+      medications: {
+        vasopressors: document.getElementById('vasopressors').checked,
+        antibiotics: document.getElementById('antibiotics').checked,
+        mechanical_ventilation: document.getElementById('mech_vent').checked,
+        sedation: document.getElementById('sedation').checked
+      },
+      history: {
+        hours_in_icu: parseFloat(document.getElementById('hours_icu').value) || 6,
+        prior_icu_admissions: parseInt(document.getElementById('prior_icu').value) || 0,
+        diagnosis: document.getElementById('diagnosis').value || '',
+        comorbidities: []
+      }
+    };
+
+    try {
+      const resp = await fetch('/api/predict', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!resp.ok) throw new Error('Prediction failed: ' + resp.status);
+      const data = await resp.json();
+      renderResults(data);
+    } catch (err) {
+      alert('Prediction error: ' + err.message);
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = '<span class="icon icon-sm"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg></span> Run Prediction';
+    }
+  });
+
+  function renderResults(data) {
+    emptyState.style.display = 'none';
+    resultsPanel.classList.add('visible');
+
+    // Risk score
+    const scoreEl = document.getElementById('riskScore');
+    const badgeEl = document.getElementById('riskBadge');
+    const sourceEl = document.getElementById('sourceLabel');
+    scoreEl.textContent = data.composite_score.toFixed(4);
+    scoreEl.style.color = data.risk_level === 'HIGH' ? 'var(--danger)' : data.risk_level === 'MEDIUM' ? 'var(--warning)' : 'var(--success)';
+    badgeEl.textContent = data.risk_level + ' RISK';
+    badgeEl.className = 'risk-badge risk-' + data.risk_level;
+    sourceEl.textContent = 'Source: ' + data.source;
+
+    // Clinical markers
+    const cs = data.clinical_scores || {};
+    const cgrid = document.getElementById('clinicalGrid');
+    cgrid.innerHTML = [
+      { label: 'SIRS Score', val: (cs.sirs || 0) + '/4', color: cs.sirs >= 3 ? 'var(--danger)' : cs.sirs >= 2 ? 'var(--warning)' : 'var(--success)' },
+      { label: 'Shock Index', val: cs.shock_index || '0.00', color: cs.shock_index > 1.0 ? 'var(--danger)' : 'var(--success)' },
+      { label: 'MAP', val: (cs.map || 0) + ' mmHg', color: cs.map < 65 ? 'var(--danger)' : cs.map < 70 ? 'var(--warning)' : 'var(--success)' },
+      { label: 'Cr Ratio', val: cs.cr_ratio || '1.00', color: cs.cr_ratio > 2 ? 'var(--danger)' : cs.cr_ratio > 1.5 ? 'var(--warning)' : 'var(--success)' }
+    ].map(function(m) {
+      return '<div class="clinical-stat"><div class="c-val" style="color:' + m.color + ';">' + m.val + '</div><div class="c-label">' + m.label + '</div></div>';
+    }).join('');
+
+    // Alerts
+    const alerts = data.alerts || [];
+    const alertsCard = document.getElementById('alertsCard');
+    const alertsList = document.getElementById('alertsList');
+    const alertCount = document.getElementById('alertCount');
+    if (alerts.length > 0) {
+      alertsCard.style.display = 'block';
+      alertCount.textContent = alerts.length + ' alert' + (alerts.length > 1 ? 's' : '');
+      alertsList.innerHTML = alerts.map(function(a) {
+        var cls = a.type === 'critical' ? 'alert-critical' : 'alert-warning';
+        var icon = a.type === 'critical'
+          ? '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>'
+          : '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>';
+        return '<div class="alert-item ' + cls + '"><span class="alert-icon">' + icon + '</span><div><strong>' + a.category + ':</strong> ' + a.message + '</div></div>';
+      }).join('');
+    } else {
+      alertsCard.style.display = 'none';
+    }
+
+    // Per-task predictions
+    var groups = data.groups || {};
+    var taskHTML = '';
+    var groupOrder = ['Mortality', 'Sepsis', 'AKI', 'Vasopressor', 'Ventilation', 'Length of Stay'];
+    groupOrder.forEach(function(gname) {
+      var labels = groups[gname];
+      if (!labels) return;
+      taskHTML += '<div style="margin-bottom: 20px;">';
+      taskHTML += '<div style="font-size:11px; font-weight:700; color:var(--primary); letter-spacing:0.06em; text-transform:uppercase; margin-bottom:8px; padding-bottom:4px; border-bottom:2px solid var(--primary-bg);">' + gname + '</div>';
+      Object.keys(labels).forEach(function(lbl) {
+        var score = labels[lbl];
+        var pct = (score * 100).toFixed(1);
+        var color = score > 0.6 ? 'var(--danger)' : score > 0.3 ? 'var(--warning)' : 'var(--success)';
+        taskHTML += '<div class="bar-row">';
+        taskHTML += '  <span class="bar-label" style="font-size:12px; font-weight:500; min-width:140px;">' + lbl + '</span>';
+        taskHTML += '  <div class="bar-track"><div class="bar-fill" style="width:' + pct + '%; background:' + color + ';"></div></div>';
+        taskHTML += '  <span class="bar-value" style="color:' + color + ';">' + pct + '%</span>';
+        taskHTML += '</div>';
+      });
+      taskHTML += '</div>';
+    });
+    document.getElementById('taskPredictions').innerHTML = taskHTML;
+  }
+  // Auto-MAP calculation
+  var sysbpEl = document.getElementById('sysbp');
+  var diasbpEl = document.getElementById('diasbp');
+  var meanbpEl = document.getElementById('meanbp');
+  function updateMAP() {
+    var sbp = parseFloat(sysbpEl.value) || 120;
+    var dbp = parseFloat(diasbpEl.value) || 80;
+    meanbpEl.value = Math.round((sbp + 2 * dbp) / 3);
+  }
+  sysbpEl.addEventListener('input', updateMAP);
+  diasbpEl.addEventListener('input', updateMAP);
+
+  // Batch CSV Upload
+  var batchFile = document.getElementById('batchFile');
+  batchFile.addEventListener('change', function(e) {
+    var file = e.target.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(ev) {
+      var lines = ev.target.result.trim().split('\n');
+      if (lines.length < 2) { showToast('CSV must have header + data rows', 'error'); return; }
+      var headers = lines[0].split(',').map(function(h) { return h.trim().toLowerCase(); });
+      var results = [];
+      var promises = [];
+      for (var i = 1; i < lines.length; i++) {
+        var vals = lines[i].split(',');
+        var row = {};
+        headers.forEach(function(h, j) { row[h] = vals[j] ? vals[j].trim() : ''; });
+        var payload = {
+          demographics: { age: parseInt(row.age) || 60, gender: row.gender || 'M', weight_kg: parseFloat(row.weight_kg) || 75 },
+          vitals: { heartrate: parseFloat(row.heartrate)||80, sysbp: parseFloat(row.sysbp)||120, diasbp: parseFloat(row.diasbp)||80, meanbp: parseFloat(row.meanbp)||90, resprate: parseFloat(row.resprate)||16, tempc: parseFloat(row.tempc)||37, spo2: parseFloat(row.spo2)||98, glucose: parseFloat(row.glucose)||100 },
+          labs: { creatinine: parseFloat(row.creatinine)||1, lactate: parseFloat(row.lactate)||1, wbc: parseFloat(row.wbc)||8000, hemoglobin: parseFloat(row.hemoglobin)||13, platelets: parseFloat(row.platelets)||250, bicarbonate: parseFloat(row.bicarbonate)||24, chloride: parseFloat(row.chloride)||102 },
+          medications: { vasopressors: false, antibiotics: false, mechanical_ventilation: false, sedation: false },
+          history: { hours_in_icu: 6, prior_icu_admissions: 0, diagnosis: '', comorbidities: [] }
+        };
+        promises.push(
+          fetch('/api/predict', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) })
+            .then(function(r) { return r.json(); })
+            .then(function(d) { results.push({row: i, score: d.composite_score, risk: d.risk_level, data: d}); })
+            .catch(function() { results.push({row: i, score: 0, risk: 'ERROR', data: null}); })
+        );
+      }
+      Promise.all(promises).then(function() {
+        results.sort(function(a,b) { return a.row - b.row; });
+        var container = document.getElementById('batchResults');
+        container.style.display = 'block';
+        var html = '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;"><span style="font-size:13px; font-weight:600; color:var(--text-1);">' + results.length + ' patients processed</span><button class="btn" id="batchExportBtn" style="padding:4px 12px; font-size:11px;">Export Results CSV</button></div>';
+        html += '<table class="data-table"><thead><tr><th>#</th><th>Score</th><th>Risk</th></tr></thead><tbody>';
+        results.forEach(function(r) {
+          var color = r.risk === 'HIGH' ? 'var(--danger)' : r.risk === 'MEDIUM' ? 'var(--warning)' : r.risk === 'ERROR' ? 'var(--text-3)' : 'var(--success)';
+          html += '<tr><td>' + r.row + '</td><td style="font-family:var(--ff-mono);">' + (r.score ? r.score.toFixed(4) : '—') + '</td><td><span class="badge" style="background:' + color + '20; color:' + color + '; border:1px solid ' + color + '40;">' + r.risk + '</span></td></tr>';
+        });
+        html += '</tbody></table>';
+        container.innerHTML = html;
+        document.getElementById('batchExportBtn').addEventListener('click', function() {
+          var csv = 'Row,Score,Risk\n' + results.map(function(r) { return r.row + ',' + (r.score||0).toFixed(4) + ',' + r.risk; }).join('\n');
+          var blob = new Blob([csv], {type:'text/csv'});
+          var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'batch_predictions.csv'; a.click();
+        });
+        showToast('Batch predictions complete: ' + results.length + ' patients', 'success');
+      });
+    };
+    reader.readAsText(file);
+  });
+})();
+</script>
+{% endblock %}

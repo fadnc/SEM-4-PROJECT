@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% block title %}Smart ICU — Compare Patients{% endblock %}
+
+{% block extra_css %}
+    .compare-controls {
+      display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 20px;
+    }
+    .compare-input {
+      padding: 10px 14px; background: var(--bg-input); border: 1px solid var(--border-2);
+      border-radius: var(--radius-sm); color: var(--text-1); font-size: 13px;
+      font-family: var(--ff-mono); outline: none; width: 160px;
+      transition: border-color var(--transition);
+    }
+    .compare-input:focus { border-color: var(--primary); }
+    .compare-grid { display: grid; gap: 16px; }
+    .compare-grid-2 { grid-template-columns: 1fr 1fr; }
+    .compare-grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+    .compare-col { min-width: 0; }
+    .compare-header {
+      padding: 16px; text-align: center; border-bottom: 2px solid var(--border);
+      margin-bottom: 12px;
+    }
+    .compare-header .c-id {
+      font-size: 20px; font-weight: 700; font-family: var(--ff-mono);
+      color: var(--primary); margin-bottom: 4px;
+    }
+    .compare-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 13px;
+    }
+    .compare-row:last-child { border-bottom: none; }
+    .compare-row .c-key { font-size: 11px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.04em; }
+    .compare-row .c-val { font-weight: 500; font-family: var(--ff-mono); }
+    .compare-empty {
+      text-align: center; padding: 60px 20px; color: var(--text-3);
+    }
+    @media (max-width: 768px) {
+      .compare-grid-2, .compare-grid-3 { grid-template-columns: 1fr; }
+    }
+{% endblock %}
+
+{% block content %}
+<div class="page-header fade-up">
+  <nav aria-label="breadcrumb" class="breadcrumb">
+    <a href="/">Overview</a>
+    <span class="breadcrumb-sep">›</span>
+    <span class="breadcrumb-current">Compare Patients</span>
+  </nav>
+  <h1 class="page-title">Patient Comparison</h1>
+  <p class="page-sub">Compare demographics, vitals, and risk predictions side-by-side for up to 3 patients.</p>
+</div>
+
+<!-- Patient Selector -->
+<div class="card fade-up fade-up-1">
+  <div class="card-head">
+    <span class="card-label"><span class="icon icon-sm" style="color:var(--primary);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3z"/></svg></span> Select Patients</span>
+  </div>
+  <div class="card-body">
+    <div class="compare-controls">
+      <input class="compare-input" type="number" id="pid1" placeholder="ICU Stay ID #1" />
+      <input class="compare-input" type="number" id="pid2" placeholder="ICU Stay ID #2" />
+      <input class="compare-input" type="number" id="pid3" placeholder="ICU Stay ID #3 (optional)" />
+      <button class="btn btn-primary" id="compareBtn">
+        <span class="icon icon-sm"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M10 3H4a1 1 0 00-1 1v6a1 1 0 001 1h6a1 1 0 001-1V4a1 1 0 00-1-1zm10 0h-6a1 1 0 00-1 1v6a1 1 0 001 1h6a1 1 0 001-1V4a1 1 0 00-1-1z"/></svg></span>
+        Compare
+      </button>
+    </div>
+    <!-- Recently viewed patients -->
+    <div id="recentPatients" style="font-size:12px; color:var(--text-3);"></div>
+  </div>
+</div>
+
+<!-- Comparison Results -->
+<div id="compareResults">
+  <div class="compare-empty fade-up fade-up-2">
+    <div style="margin-bottom:8px;"><span class="icon icon-xl" style="color:var(--text-3);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M10 3H4a1 1 0 00-1 1v6a1 1 0 001 1h6a1 1 0 001-1V4a1 1 0 00-1-1zm0 10H4a1 1 0 00-1 1v6a1 1 0 001 1h6a1 1 0 001-1v-6a1 1 0 00-1-1zm10-10h-6a1 1 0 00-1 1v6a1 1 0 001 1h6a1 1 0 001-1V4a1 1 0 00-1-1zm0 10h-6a1 1 0 00-1 1v6a1 1 0 001 1h6a1 1 0 001-1v-6a1 1 0 00-1-1z"/></svg></span></div>
+    <div>Enter 2 or 3 ICU Stay IDs above and click "Compare"<br/>to see a side-by-side risk and demographics comparison.</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  // Pre-fill from URL params
+  var params = new URLSearchParams(window.location.search);
+  var idsParam = params.get('ids');
+  if (idsParam) {
+    var ids = idsParam.split(',');
+    if (ids[0]) document.getElementById('pid1').value = ids[0];
+    if (ids[1]) document.getElementById('pid2').value = ids[1];
+    if (ids[2]) document.getElementById('pid3').value = ids[2];
+  }
+
+  // Show recently viewed patients
+  if (window.SmartICU && SmartICU.getRecent) {
+    var recent = SmartICU.getRecent();
+    if (recent.length > 0) {
+      var el = document.getElementById('recentPatients');
+      el.innerHTML = '<span style="font-weight:600;">Recently viewed:</span> '
+        + recent.slice(0, 6).map(function(r) {
+          return '<a href="#" class="recent-pick" data-id="' + r.id + '" style="color:var(--primary); text-decoration:underline; margin:0 4px;">' + r.label + '</a>';
+        }).join(' ');
+      el.addEventListener('click', function(e) {
+        if (e.target.classList.contains('recent-pick')) {
+          e.preventDefault();
+          var id = e.target.dataset.id;
+          var p1 = document.getElementById('pid1');
+          var p2 = document.getElementById('pid2');
+          var p3 = document.getElementById('pid3');
+          if (!p1.value) p1.value = id;
+          else if (!p2.value) p2.value = id;
+          else if (!p3.value) p3.value = id;
+        }
+      });
+    }
+  }
+
+  document.getElementById('compareBtn').addEventListener('click', function() {
+    var ids = [
+      document.getElementById('pid1').value,
+      document.getElementById('pid2').value,
+      document.getElementById('pid3').value
+    ].filter(function(v) { return v && v.trim(); });
+
+    if (ids.length < 2) {
+      showToast('Please enter at least 2 ICU Stay IDs', 'warning');
+      return;
+    }
+
+    // Update URL
+    history.replaceState(null, '', '/compare?ids=' + ids.join(','));
+
+    var container = document.getElementById('compareResults');
+    container.innerHTML = '<div style="text-align:center; padding:40px;"><span class="global-spinner"></span><br/><span style="font-size:13px; color:var(--text-3); margin-top:8px; display:inline-block;">Loading patient data...</span></div>';
+
+    var promises = ids.map(function(id) {
+      return Promise.all([
+        fetch('/api/patients/' + id).then(function(r) { return r.ok ? r.json() : null; }),
+        fetch('/api/patients/' + id + '/predictions').then(function(r) { return r.ok ? r.json() : null; })
+      ]).then(function(results) {
+        return { patient: results[0], predictions: results[1] };
+      }).catch(function() { return null; });
+    });
+
+    Promise.all(promises).then(function(data) {
+      data = data.filter(function(d) { return d && d.patient; });
+      if (data.length < 2) {
+        container.innerHTML = '<div class="compare-empty"><div style="color:var(--danger);">Could not load enough patient data. Verify the ICU Stay IDs exist.</div></div>';
+        return;
+      }
+      renderComparison(data, container);
+    });
+  });
+
+  function renderComparison(data, container) {
+    var gridClass = data.length === 3 ? 'compare-grid-3' : 'compare-grid-2';
+    var html = '';
+
+    // Demographics comparison
+    html += '<div class="card fade-up" style="margin-top:16px;"><div class="card-head"><span class="card-label"><span class="icon icon-sm" style="color:var(--primary);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4z"/></svg></span> Demographics</span></div><div class="card-body"><div class="compare-grid ' + gridClass + '">';
+    data.forEach(function(d) {
+      var p = d.patient;
+      var pred = d.predictions || {};
+      var risk = pred.risk_level || 'LOW';
+      var rColor = risk === 'HIGH' ? 'var(--danger)' : risk === 'MEDIUM' ? 'var(--warning)' : 'var(--success)';
+      html += '<div class="compare-col">';
+      html += '<div class="compare-header"><div class="c-id">#' + (p.icustay_id || '?') + '</div><span class="badge" style="background:' + rColor + '15; color:' + rColor + '; border:1px solid ' + rColor + '30;">' + risk + ' RISK</span></div>';
+      var fields = [
+        ['Subject', p.subject_id],
+        ['Age', p.age ? Math.round(p.age) : '—'],
+        ['Gender', p.gender || '—'],
+        ['Diagnosis', (p.diagnosis || '—').substring(0, 30)],
+        ['Care Unit', p.first_careunit || '—'],
+        ['LOS (hrs)', p.los_hours ? p.los_hours.toFixed(1) : '—'],
+        ['Expired', p.expire_flag ? 'Yes' : 'No'],
+        ['Score', pred.composite_score ? pred.composite_score.toFixed(4) : '—']
+      ];
+      fields.forEach(function(f) {
+        var valColor = '';
+        if (f[0] === 'Expired') valColor = ' style="color:' + (f[1] === 'Yes' ? 'var(--danger)' : 'var(--success)') + ';"';
+        if (f[0] === 'Score') valColor = ' style="color:' + rColor + ';"';
+        html += '<div class="compare-row"><span class="c-key">' + f[0] + '</span><span class="c-val"' + valColor + '>' + f[1] + '</span></div>';
+      });
+      html += '</div>';
+    });
+    html += '</div></div></div>';
+
+    // Risk predictions comparison
+    html += '<div class="card fade-up" style="margin-top:16px;"><div class="card-head"><span class="card-label"><span class="icon icon-sm" style="color:var(--accent);"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.8 18.4L14 10.67V6.5l1.35-1.69c.26-.33.03-.81-.39-.81H9.04c-.42 0-.65.48-.39.81L10 6.5v4.17L4.2 18.4c-.49.66-.02 1.6.8 1.6h14c.82 0 1.29-.94.8-1.6z"/></svg></span> Risk Scores</span></div><div class="card-body"><div class="compare-grid ' + gridClass + '">';
+    data.forEach(function(d) {
+      var pred = d.predictions || {};
+      var scores = pred.scores || {};
+      html += '<div class="compare-col">';
+      html += '<div class="compare-header"><div class="c-id">#' + (d.patient.icustay_id || '?') + '</div></div>';
+      var keys = Object.keys(scores).sort();
+      keys.forEach(function(key) {
+        var s = scores[key];
+        var color = s > 0.6 ? 'var(--danger)' : s > 0.3 ? 'var(--warning)' : 'var(--success)';
+        html += '<div style="padding:4px 12px;"><div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:2px;"><span style="color:var(--text-3);">' + key + '</span><span style="color:' + color + '; font-family:var(--ff-mono); font-weight:600;">' + (s * 100).toFixed(1) + '%</span></div>';
+        html += '<div class="bar-track"><div class="bar-fill" style="width:' + (s * 100) + '%; background:' + color + ';"></div></div></div>';
+      });
+      html += '</div>';
+    });
+    html += '</div></div></div>';
+
+    container.innerHTML = html;
+    showToast('Comparing ' + data.length + ' patients', 'success');
+  }
+
+  // Auto-trigger if IDs in URL
+  if (idsParam && idsParam.split(',').filter(Boolean).length >= 2) {
+    document.getElementById('compareBtn').click();
+  }
+})();
+</script>
+{% endblock %}
