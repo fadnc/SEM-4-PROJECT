@@ -49,7 +49,7 @@ The data loader reads tables in a **specific order** because some tables depend 
 | 11 | `PROCEDUREEVENTS_MV.csv` | 258K | ICU procedures with timestamps | **Ventilation detection** — mechanical vent itemids |
 | 12 | `PROCEDURES_ICD.csv` | 240K | ICD-9 procedure codes | Ventilation ICD codes (9670-9672) |
 | 13 | `MICROBIOLOGYEVENTS.csv` | 631K | Culture results (organism, antibiotic sensitivity) | Infection evidence for sepsis |
-| 14 | `TRANSFERS.csv` | 261K | Patient transfers between units | ICU readmission detection |
+| 14 | `TRANSFERS.csv` | 261K | Patient transfers between units | Unit transfer tracking |
 
 **Tables intentionally skipped** (6 files):
 - `NOTEEVENTS` — requires NLP, different model type entirely
@@ -205,9 +205,7 @@ A **label** is the ground truth the model learns: "Did this bad thing actually h
 
 **Length of Stay**: `los_short_24h = 1` if remaining ≤ 24h; `los_long_72h = 1` if remaining > 72h
 
-**Readmission** (tabular, not time-series): `label = 1` if same patient has another ICU admission within 30 days. Uses 16 discharge-level features with XGBoost + SHAP.
-
-### Full Label Vector (19 binary labels per sequence)
+### Full Label Vector (17 binary labels per sequence)
 
 ```
 [ mortality_6h, mortality_12h, mortality_24h,          # 1-3
@@ -216,7 +214,7 @@ A **label** is the ground truth the model learns: "Did this bad thing actually h
   aki_stage1_48h, aki_stage2_48h, aki_stage3_48h,      # 10-12
   vasopressor_6h, vasopressor_12h,                     # 13-14
   ventilation_6h, ventilation_12h, ventilation_24h,    # 15-17
-  los_short_24h, los_long_72h ]                        # 18-19
+  los_short_24h, los_long_72h ]                        # 16-17
 ```
 
 ---
@@ -231,7 +229,7 @@ A **label** is the ground truth the model learns: "Did this bad thing actually h
 |-------|------|-----------|----------|
 | **LSTM** | Recurrent Neural Net | Long-term memory, captures deterioration trends | Mortality, Ventilation, Sepsis |
 | **Transformer** | Attention-based | Cross-feature attention, subtle interactions | Sepsis (temp × HR × WBC) |
-| **XGBoost** | Gradient-boosted trees | Handles class imbalance, interpretable | Vasopressor, LOS, Readmission, Mortality |
+| **XGBoost** | Gradient-boosted trees | Handles class imbalance, interpretable | Vasopressor, LOS, Mortality |
 
 ### LSTM (Bidirectional, 2-layer)
 
@@ -255,7 +253,7 @@ Input [batch, 24, features]
 
 ```
 Input [n_samples, 24, features] → flatten → [n_samples, 24 × features]
-  → 19 independent XGBClassifier models
+  → 17 independent XGBClassifier models
   → max_depth=8, 300 trees, early stopping (20 rounds)
   → tree_method='hist', device='cuda'
 ```
@@ -290,7 +288,7 @@ For each task (e.g., "sepsis"):
 python main_pipeline.py --data_dir data
 ```
 
-**Steps**: Load Data → Pre-index (group by icustay_id) → Feature Engineering → Label Generation → Train 3 Models Per Task → Train Readmission → Save Reports
+**Steps**: Load Data → Pre-index (group by icustay_id) → Feature Engineering → Label Generation → Train 3 Models Per Task → Save Reports
 
 ### Temporal Split (no data leakage)
 
@@ -348,7 +346,7 @@ Subsequent runs skip feature extraction entirely and load from cache.
 |----------|--------|-------------|
 | `/api/stats` | GET | Dataset statistics (total stays, mean age, mortality rate, care unit distribution) |
 | `/api/patients` | GET | Paginated patient list with search, risk filtering |
-| `/api/patients/{id}/predictions` | GET | All 19 prediction scores for an existing patient |
+| `/api/patients/{id}/predictions` | GET | All 17 prediction scores for an existing patient |
 | `/api/patients/{id}/vitals` | GET | Time-series vital signs for charting |
 | `/api/patients/{id}/labs` | GET | Time-series lab values for charting |
 | `/api/alerts` | GET | All HIGH/MEDIUM risk patients with triggered labels |
@@ -378,7 +376,7 @@ Subsequent runs skip feature extraction entirely and load from cache.
 | Page | Purpose |
 |------|---------|
 | **Overview** | KPI cards (total stays, age, LOS, mortality) + risk distribution + care units + critical alerts |
-| **Patient Detail** | Click patient → vitals charts, lab trends, all 19 prediction scores, SHAP features |
+| **Patient Detail** | Click patient → vitals charts, lab trends, all 17 prediction scores, SHAP features |
 | **Alerts** | All high-risk patients sorted by composite score, with triggered labels |
 | **New Assessment** | Input form for new patient → real-time risk prediction |
 | **Validation** | Model performance metrics and training reports |
@@ -418,8 +416,7 @@ SEM-4-PROJECT/
 │   ├── aki_predictor.py           # KDIGO staging
 │   ├── vasopressor_predictor.py   # Drug requirement detection
 │   ├── ventilation_predictor.py   # 3-layer vent detection
-│   ├── los_predictor.py           # Short/long stay
-│   └── readmission_predictor.py   # 30-day readmission (XGBoost + SHAP)
+│   └── los_predictor.py           # Short/long stay
 │
 ├── templates/                     # Jinja2 HTML templates
 │   ├── base.html                  # Base layout with theme toggle
