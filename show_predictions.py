@@ -83,7 +83,7 @@ def main():
         ("[3]   AKI",           "XGBoost / LSTM — KDIGO stages 1-3 at 24/48h"),
         ("[4]   VASOPRESSOR",   "XGBoost primary — drug requirement at 6/12h"),
         ("[5]   VENTILATION",   "LSTM / XGBoost — mechanical vent at 6/12/24h"),
-        ("[6]   LENGTH OF STAY","XGBoost primary — short (<24h) / long (>72h) stay"),
+        ("[6]   LENGTH OF STAY","XGBoost primary — short (<24h) / long (>72h) stay")
     ]
     for cat, desc in categories:
         print(f"  {cat:<20s} — {desc}")
